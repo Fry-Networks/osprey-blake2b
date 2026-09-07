@@ -1,0 +1,42 @@
+# GHDL work library
+src/ghdl-work/
+work-obj*.cf
+*.o
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Vivado + Xilinx
+*.bit
+*.bin
+*.dcp
+*.jou
+*.log
+*.rpt
+.Xil/
+project_*/
+vivado*.backup.*
+webtalk*.jou
+webtalk*.log
+.hbs
+usage_statistics_webtalk.*
+
+# Operator rollback state (NOT part of source)
+backups/
+
+# Vendored second-party clone that carried its own .git
+vendor/sia-fpga/.git/
+vendor/knots/
+vendor/pachira-algo/
+
+# Raw HARD GATE per-vector output (summary is committed instead)
+reports/hardgate-*-raw.txt
