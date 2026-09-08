@@ -15,9 +15,12 @@ targeting the Osprey E100 miner (Xilinx Virtex UltraScale+ VU35P,
 | Behavioral simulation — Stage 3        | **100/100 HARD GATE PASS** under GHDL |
 | Behavioral simulation — Stage 4 smoke  | PASS (nonce iterator + pipeline alignment) |
 | VU35P clock management (`MMCME4_ADV`)  | Authored (`src/clock_mgmt.vhd`), 250 MHz |
-| Xilinx constraints (`.xdc`)            | Authored with placeholder pin LOCs |
-| Vivado synthesis + `.bit`              | **NOT PROVIDED** — requires Vivado ML Enterprise; source-only ships in this repo |
+| Xilinx constraints (`.xdc`)            | **Real board pins** from the vendor E300 constraint file |
+| Chip-level UART wrapper                | Complete (`src/OspreyBlake2bUartTop.vhd`) — 5 board pins |
+| Vivado synthesis + P&R                 | **Complete** — timing met, 0 routing errors, DRC 0 errors |
+| `.bit` artifact                        | Built (21.3 MB). Not committed — see Releases |
 | Osprey deployment glue (CGI upload)    | **NOT PROVIDED** — deployment path documented, not tested |
+| Zynq-side miner binary                 | **NOT PROVIDED** — see "What remains" |
 
 Evidence file: [`reports/hardgate-stage3-100.txt`](reports/hardgate-stage3-100.txt)
 (100 vectors × 4 × u64 hash, SHA-256 of vector file + all tested RTL sources).
@@ -125,23 +128,34 @@ Note: `src/clock_mgmt.vhd` references the Xilinx `UNISIM` library and will
 NOT analyze under GHDL mcode (mcode has no `UNISIM` primitive support).
 It is a synthesis-only file — Vivado expands `MMCME4_ADV`.
 
-### Vivado synthesis (not provided in-repo — contribution welcome)
+### Vivado synthesis + implementation
 
-Intended flow:
+Requires Vivado ML Enterprise (the VU35P HBM part is not covered by the free tier).
 
 ```
-vivado -mode batch -source build/synth.tcl
+# Out-of-context synthesis of the mining core (no IO buffers, fast, no pin LOCs needed)
+vivado -mode batch -source build/synth.tcl -tclargs ooc
+
+# Full flow on the chip-level UART wrapper, through to a bitstream
+vivado -mode batch -source build/synth.tcl -tclargs full
 ```
 
-where `build/synth.tcl` would `read_vhdl` the source in the same order as
-GHDL analyze, `read_xdc constraints/osprey_vu35p.xdc`,
-`synth_design -top OspreyBlake2bTop -part xcvu35p-fsvh2104-2-e`,
-`opt_design`, `place_design`, `route_design`, `write_bitstream`.
-Expected runtime on 8-core CPU: 12–24 hours. WNS ≥ 0, WHS ≥ 0 required for
-release. `build/synth.tcl` is **not authored** in this initial import
-because no maintainer with Vivado access has closed the pin-LOC gap
-(see caveats below). Contributors with Vivado ML Enterprise and Osprey E100
-board access are welcome to open a PR.
+`-tclargs` must come last; Vivado hands everything after it to the script.
+
+Results on `xcvu35p_CIV-fsvh2104-2-e` with Vivado 2026.1:
+
+| Metric | Core only (OOC) | Chip-level (full) |
+|--------|-----------------|-------------------|
+| WNS @ 250 MHz | +2.349 ns | +0.365 ns |
+| WHS | +0.058 ns | +0.010 ns |
+| Failing endpoints | 0 / 190,970 | 0 / 195,409 |
+| CLB LUTs | 97,895 (11.2%) | 98,015 (11.2%) |
+| CLB Registers | 191,161 (11.0%) | 192,728 (11.1%) |
+| Bonded IOB | n/a (OOC) | 5 / 416 (1.2%) |
+| Routing | n/a | 260,283 / 260,283 nets, 0 errors |
+| DRC | n/a | 0 errors |
+
+Utilization is ~11%, so roughly eight parallel cores would fit on the device.
 
 ## Caveats — what remains before real hardware bring-up
 
