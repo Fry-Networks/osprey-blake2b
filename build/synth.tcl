@@ -3,21 +3,21 @@
 #
 # Target: xcvu35p_CIV-fsvh2104-2-e
 #   The Osprey firmware reports chipType "vu35p_civ" via the getAllInfo CGI
-#   endpoint, which maps to the CIV variant of the Virtex UltraScale+ HBM part.
-#   Package/speed grade are ASSUMED (fsvh2104 / -2) — no public E100 board file
-#   exists. Override with -tclargs to try an alternate.
+#   endpoint. The vendor's own board file
+#   (PachiraMining/E300_development hardware/constrain_e300_vu35p_civ.xdc)
+#   names this exact part in its header, which confirms the package and speed
+#   grade. Override with -tclargs to try an alternate.
 #
 # Two modes:
 #   ooc   (default) out-of-context synthesis. No IO buffers, no pin constraints.
 #                   Produces real utilization + timing for the mining core.
-#   full            full flow through write_bitstream. Requires a top level whose
-#                   port count fits the package (see IO NOTE below).
+#   full            full flow through write_bitstream, on the chip-level wrapper.
 #
 # IO NOTE: OspreyBlake2bTop exposes Stage3In/Stage4In as 10x64-bit arrays plus
-# TargetTop64/Nonce/HashTop64 — ~1475 top-level signals. The fsvh2104 package
-# provides far fewer user IO, so the full flow cannot place this entity as-is.
-# A serializing wrapper (UART or AXI from the zynq side) is the intended fix and
-# is called out in the header of OspreyBlake2bTop.vhd as a later-session task.
+# TargetTop64/Nonce/HashTop64, which synthesises to 1155 bonded IOB against the
+# 416 the fsvh2104 package provides (277% over). That is a core boundary, not a
+# chip boundary. OspreyBlake2bUartTop serialises it onto the board UART and is
+# what the full flow implements; chip IO is then 5 pins.
 #
 # Usage:
 #   vivado -mode batch -source build/synth.tcl
@@ -77,8 +77,9 @@ if { $mode eq "full" } {
 }
 
 # --- constraints -------------------------------------------------------------
-# The checked-in XDC carries ASSUMED_PIN placeholders. Pin LOCs are meaningless
-# for OOC, so only the full flow reads it. OOC gets a clean period constraint.
+# The full flow reads the board constraint file (real pin LOCs from the vendor
+# E300 file). Pin LOCs are meaningless out of context, so OOC instead gets a
+# generated timing-only constraint.
 if { $mode eq "full" } {
   set xdc $root/constraints/osprey_vu35p_uart.xdc
   if { [file exists $xdc] } { read_xdc $xdc; puts "INFO: read $xdc" }   else { puts "ERROR: missing $xdc"; exit 1 }
