@@ -31,12 +31,12 @@ void knots_header_init(knots_header_t *h)
     h->nBits    = 0x1d00ffffu;
 }
 
-static uint32_t complete_version(const knots_header_t *h)
+uint32_t knots_complete_version(const knots_header_t *h)
 {
     return HEADER_V2_FLAG | (h->nVersion & ~HEADER_V2_FLAG);
 }
 
-static uint32_t time_on_wire(const knots_header_t *h)
+uint32_t knots_time_on_wire(const knots_header_t *h)
 {
     if ((h->m_flags & USE_TIME_OFFSET) == 0) return h->nTime;
     return (uint32_t)(h->nTime - h->m_time_offset);
@@ -60,11 +60,11 @@ int stage_inputs(const knots_header_t *h,
     tagged_hash("Bitcoin block hash PoW XOR key", h->m_xor_key, 16, xor_key_inner);
 
     /* ---- stage 1: 119-byte payload ---- */
-    put_le32(h1_payload + o, complete_version(h));            o += 4;
+    put_le32(h1_payload + o, knots_complete_version(h));            o += 4;
     memcpy  (h1_payload + o, prev_sane, 32);                  o += 32;
     put_le32(h1_payload + o, (uint32_t)h->m_height);          o += 4;   /* i32 LE */
     memcpy  (h1_payload + o, h->hashMerkleRoot, 32);          o += 32;
-    put_le32(h1_payload + o, time_on_wire(h));                o += 4;
+    put_le32(h1_payload + o, knots_time_on_wire(h));                o += 4;
     h1_payload[o++] = 0x00;                                             /* reserved */
     put_le32(h1_payload + o, h->nBits);                       o += 4;
     put_le32(h1_payload + o, (uint32_t)h->m_txcount);         o += 4;   /* u16 written as u32 */

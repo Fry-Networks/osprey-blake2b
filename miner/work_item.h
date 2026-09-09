@@ -50,6 +50,13 @@ typedef struct {
 
 void knots_header_init(knots_header_t *h);
 
+/* Wire encodings of two header fields, shared with the block serialiser so the
+ * bytes we hash and the bytes we submit can never disagree.
+ *   complete_version = nVersion with the v2 flag set
+ *   time_on_wire     = nTime, less m_time_offset when the flag says so */
+uint32_t knots_complete_version(const knots_header_t *h);
+uint32_t knots_time_on_wire(const knots_header_t *h);
+
 /* Stage-3 and stage-4 messages, plus hash_a. mode 0 only; returns -1 otherwise. */
 int  stage_inputs(const knots_header_t *h,
                   uint8_t ss3[STAGE3_LEN], uint8_t ss4[STAGE4_LEN],

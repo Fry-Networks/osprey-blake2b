@@ -15,8 +15,10 @@ HOSTCC  ?= gcc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -pthread
 LDFLAGS := -static -pthread
 
-SRC := miner.c work_item.c sha256.c blake2b.c uio_uart.c
-HDR := work_item.h sha256.h blake2b.h uio_uart.h
+SRC := miner.c work_item.c sha256.c blake2b.c uio_uart.c \
+       bech32.c coinbase.c merkle.c block.c devfee.c selftest_block.c
+HDR := work_item.h sha256.h blake2b.h uio_uart.h \
+       bech32.h coinbase.h merkle.h block.h devfee.h
 
 all: blake2b
 

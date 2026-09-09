@@ -31,4 +31,8 @@ void sha256(const uint8_t *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
 void tagged_hash(const char *tag, const uint8_t *payload, size_t len,
                  uint8_t out[SHA256_DIGEST_LEN]);
 
+/* SHA256(SHA256(data)) -- txids, merkle nodes, block hashes. Output is in
+ * INTERNAL byte order; display order is this reversed. */
+void sha256d(const uint8_t *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
+
 #endif /* OSPREY_SHA256_H */

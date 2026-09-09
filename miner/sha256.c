@@ -117,3 +117,10 @@ void tagged_hash(const char *tag, const uint8_t *payload, size_t len,
     sha256_update(&c, payload, len);
     sha256_final(&c, out);
 }
+
+void sha256d(const uint8_t *data, size_t len, uint8_t out[SHA256_DIGEST_LEN])
+{
+    uint8_t once[SHA256_DIGEST_LEN];
+    sha256(data, len, once);
+    sha256(once, SHA256_DIGEST_LEN, out);
+}

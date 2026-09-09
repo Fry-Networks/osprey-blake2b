@@ -18,6 +18,14 @@
 #include "work_item.h"
 #include "sha256.h"
 #include "blake2b.h"
+#include "bech32.h"
+#include "block.h"
+#include "coinbase.h"
+#include "devfee.h"
+#include "merkle.h"
+
+/* selftest_block.c */
+int selftest_block_production(void);
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -49,10 +57,12 @@ static struct {
     unsigned    target_shift;   /* extra left-shift to inflate the target for bring-up */
     int         dry_run;        /* don't submit */
     int         synthetic;      /* build work locally instead of calling getblocktemplate */
+    const char *payout_address; /* where block rewards go; dev fee overrides 1 in 20 */
+    int         submit_test;    /* build a real block and offer it to the node */
 } cfg = {
     DEFAULT_UART, DEFAULT_STATUS, DEFAULT_LOG,
     "127.0.0.1", 4001, NULL, NULL,
-    BLAKE2B_TARGET_SHIFT_MAINNET, 1, 0
+    BLAKE2B_TARGET_SHIFT_MAINNET, 1, 0, NULL, 0
 };
 
 static struct {
@@ -63,7 +73,36 @@ static struct {
     char     last_nonce[32], last_hash[32];
     int      st_vectors, st_uart, st_loopback;
     long     nonce_offset;
+    char     merkle_root[72];
+    char     payout_address[80];
+    uint64_t blocks_submitted, blocks_accepted;
+    char     last_submit[128];
 } st = { .st_vectors = -1, .st_uart = -1, .st_loopback = -1, .nonce_offset = 97 };
+
+/* The current template's block material, kept so a winning nonce can be turned
+ * into a submittable block. Sized for the chain's 4 MB block limit. */
+#define TPL_MAX_TX 8192
+static struct {
+    knots_header_t hdr;
+    coinbase_t     cb;
+    uint8_t        ids[(TPL_MAX_TX + 1) * 32];   /* [0] = coinbase txid */
+    size_t         tx_count;                     /* excludes the coinbase */
+    uint8_t        tx_data[4u * 1024u * 1024u];  /* raw txs, verbatim from GBT */
+    size_t         tx_data_len;
+    int            valid;
+} g_tpl;
+
+/* Hex helper taking an explicit length: the JSON fields are not NUL-terminated
+ * where they end. */
+static int hex2bin_n(const char *hex, uint8_t *out, size_t nbytes)
+{
+    for (size_t i = 0; i < nbytes; ++i) {
+        unsigned v;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return -1;
+        out[i] = (uint8_t)v;
+    }
+    return 0;
+}
 
 static uint64_t now_s(void) { return (uint64_t)time(NULL); }
 
@@ -101,6 +140,16 @@ static void write_status(uio_uart_t *u)
         "  \"uart\": { \"rx_bytes\": %llu, \"tx_bytes\": %llu, \"overruns\": %llu, \"tx_stall_us\": %llu },\n"
         "  \"last_nonce\": \"%s\",\n"
         "  \"last_hash_top64\": \"%s\",\n"
+        "  \"merkle_root\": \"%s\",\n"
+        "  \"payout_address\": \"%s\",\n"
+        "  \"devfee_percent\": %d,\n"
+        "  \"devfee_active\": %s,\n"
+        "  \"devfee_templates_total\": %llu,\n"
+        "  \"devfee_templates_dev\": %llu,\n"
+        "  \"blocks_submitted\": %llu,\n"
+        "  \"blocks_accepted\": %llu,\n"
+        "  \"last_submit_result\": \"%s\",\n"
+        "  \"developer\": \"Fry Networks\",\n"
         "  \"last_error\": \"%s\"\n"
         "}\n",
         st.phase, (unsigned long long)(now_s() - st.started_at), cfg.uart_dev,
@@ -113,7 +162,15 @@ static void write_status(uio_uart_t *u)
         u ? (unsigned long long)u->tx_bytes : 0ULL,
         u ? (unsigned long long)u->overruns : 0ULL,
         u ? (unsigned long long)u->tx_stall_us : 0ULL,
-        st.last_nonce, st.last_hash, st.last_error);
+        st.last_nonce, st.last_hash,
+        st.merkle_root, st.payout_address,
+        DEVFEE_PERCENT, devfee_current_is_dev() ? "true" : "false",
+        (unsigned long long)devfee_templates_total(),
+        (unsigned long long)devfee_templates_dev(),
+        (unsigned long long)st.blocks_submitted,
+        (unsigned long long)st.blocks_accepted,
+        st.last_submit,
+        st.last_error);
     fclose(f);
     rename(tmp, cfg.status_path);
 }
@@ -282,6 +339,57 @@ static int synthetic_template(knots_header_t *h, uint64_t counter)
     return 0;
 }
 
+/* Serialise the current template's block with the winning header and offer it to
+ * the node.
+ *
+ * The node's reply is the only honest verdict available: "high-hash" means the
+ * block parsed and only the PoW was short, whereas a parse or bad-txns error
+ * means our serialisation is wrong. Those look identical from here without
+ * asking, which is why the raw result string is recorded verbatim. */
+static int submit_block(const knots_header_t *winner)
+{
+    if (!g_tpl.valid) {
+        snprintf(st.last_submit, sizeof st.last_submit, "no template held");
+        return -1;
+    }
+
+    static uint8_t blk[4u * 1024u * 1024u + 4096u];
+    int blen = block_serialize(winner, g_tpl.cb.raw, g_tpl.cb.raw_len,
+                               g_tpl.tx_data, g_tpl.tx_data_len, g_tpl.tx_count,
+                               blk, sizeof blk);
+    if (blen <= 0) {
+        snprintf(st.last_submit, sizeof st.last_submit, "serialise failed");
+        return -1;
+    }
+
+    static char body[2u * (4u * 1024u * 1024u + 4096u) + 128u];
+    int o = snprintf(body, sizeof body,
+                     "{\"jsonrpc\":\"1.0\",\"id\":\"osprey\",\"method\":\"submitblock\",\"params\":[\"");
+    for (int i = 0; i < blen; ++i) o += snprintf(body + o, 3, "%02x", blk[i]);
+    snprintf(body + o, sizeof body - (size_t)o, "\"]}");
+
+    st.blocks_submitted++;
+    char *r = rpc_call(body, NULL);
+    if (!r) {
+        snprintf(st.last_submit, sizeof st.last_submit, "rpc call failed");
+        logf_line("SUBMIT: rpc call failed (block %d bytes)", blen);
+        return -1;
+    }
+    /* submitblock returns null on ACCEPTANCE and a reason string otherwise. */
+    const char *res = strstr(r, "\"result\":");
+    if (res && strncmp(res + 9, "null", 4) == 0) {
+        st.blocks_accepted++;
+        snprintf(st.last_submit, sizeof st.last_submit, "ACCEPTED");
+        logf_line("SUBMIT: BLOCK ACCEPTED (%d bytes, height %llu)",
+                  blen, (unsigned long long)st.last_template_height);
+        return 0;
+    }
+    const char *body_start = res ? res : r;
+    snprintf(st.last_submit, sizeof st.last_submit, "%.100s", body_start);
+    logf_line("SUBMIT: rejected (%d bytes): %.160s", blen, body_start);
+    return -1;
+}
+
 static int get_template(knots_header_t *h)
 {
     const char *body =
@@ -315,6 +423,82 @@ static int get_template(knots_header_t *h)
     for (int i = 0; i < 32; ++i) h->hashPrevBlock[i] = pb[31 - i];
 
     st.last_template_height = (uint64_t)height;
+
+    /* ---- coinbase + merkle root ------------------------------------------
+     *
+     * Everything above only identifies which block we are building on. What
+     * makes the result a *winnable* block is below: without a coinbase the
+     * merkle root stays zero and a solved header corresponds to nothing.
+     *
+     * The transactions array is walked by scanning for "txid":" and "data":"
+     * in order. Both appear exactly once per entry and in array order, so the
+     * n-th of each belong together. This avoids pulling in a JSON parser for a
+     * 456 KB document on a device with no package manager. */
+    long long cbvalue = 0;
+    if (json_num(r, "coinbasevalue", &cbvalue) != 0 || cbvalue <= 0) {
+        snprintf(st.last_error, sizeof st.last_error, "template has no coinbasevalue");
+        return -1;
+    }
+    char wc[256] = {0};
+    json_str(r, "default_witness_commitment", wc, sizeof wc);   /* optional */
+
+    g_tpl.tx_count = 0;
+    g_tpl.tx_data_len = 0;
+
+    /* ids[0] is reserved for the coinbase txid, filled in after it is built. */
+    const char *p = r;
+    while (g_tpl.tx_count < TPL_MAX_TX) {
+        const char *tx = strstr(p, "\"txid\":\"");
+        if (!tx) break;
+        tx += 8;
+        uint8_t disp[32];
+        if (hex2bin_n(tx, disp, 32) != 0) break;
+        /* Display order in JSON, internal order in the tree. */
+        uint8_t *slot = g_tpl.ids + (g_tpl.tx_count + 1) * 32;
+        for (int i = 0; i < 32; ++i) slot[i] = disp[31 - i];
+
+        const char *dt = strstr(p, "\"data\":\"");
+        if (!dt) break;
+        dt += 8;
+        const char *end = strchr(dt, '"');
+        if (!end) break;
+        size_t nbytes = (size_t)(end - dt) / 2;
+        if (g_tpl.tx_data_len + nbytes > sizeof g_tpl.tx_data) {
+            snprintf(st.last_error, sizeof st.last_error,
+                     "template transactions exceed the %zu-byte block buffer",
+                     sizeof g_tpl.tx_data);
+            return -1;
+        }
+        if (hex2bin_n(dt, g_tpl.tx_data + g_tpl.tx_data_len, nbytes) != 0) break;
+        g_tpl.tx_data_len += nbytes;
+        g_tpl.tx_count++;
+        p = (tx > dt) ? tx : dt;
+    }
+
+    const char *payout = devfee_next_payout(cfg.payout_address);
+    snprintf(st.payout_address, sizeof st.payout_address, "%s", payout);
+    /* Roll the extranonce per template so two templates never present the FPGA
+     * with identical work. */
+    if (coinbase_build(&g_tpl.cb, payout, (uint64_t)cbvalue, (int32_t)height,
+                       devfee_templates_total(), wc[0] ? wc : NULL) != 0) {
+        snprintf(st.last_error, sizeof st.last_error,
+                 "coinbase build failed (payout address rejected?)");
+        return -1;
+    }
+    memcpy(g_tpl.ids, g_tpl.cb.txid, 32);
+
+    if (merkle_root(g_tpl.ids, g_tpl.tx_count + 1, h->hashMerkleRoot) != 0) {
+        snprintf(st.last_error, sizeof st.last_error, "merkle root failed");
+        return -1;
+    }
+    /* v2 headers carry the count themselves, and it includes the coinbase. */
+    h->m_txcount = (uint16_t)(g_tpl.tx_count + 1);
+    g_tpl.hdr = *h;
+    g_tpl.valid = 1;
+
+    for (int i = 0; i < 32; ++i)
+        snprintf(st.merkle_root + 2 * i, 3, "%02x", h->hashMerkleRoot[31 - i]);
+
     return 0;
 }
 
@@ -799,13 +983,17 @@ static void usage(void)
         "  --rpc-host HOST      default 127.0.0.1\n"
         "  --rpc-port PORT      default 4001\n"
         "  --rpc-user USER\n"
-        "  --rpc-pass PASS\n"
+        "  --rpc-pass PASS      visible in /proc/<pid>/cmdline; prefer --rpc-pass-env\n"
+        "  --rpc-pass-env VAR   read the RPC password from environment VAR\n"
         "  --target-shift N     target left-shift; raise above 22 to inflate for bring-up\n"
         "  --status PATH        default %s\n"
         "  --log PATH           default %s\n"
         "  --submit             actually submit (default: dry run)\n"
         "  --synthetic-work     build work locally; no RPC, no credentials needed\n"
-        "  --selftest WHAT      vectors | uart | loopback | rxdump | all\n",
+        "  --payout-address A   bech32 address for the coinbase (default: dev fee address)\n"
+        "  --submit-test        build a block from a live template and offer it to\n"
+        "                       the node; it must be rejected high-hash, not unparsed\n"
+        "  --selftest WHAT      vectors | block | uart | loopback | rxdump | all\n",
         DEFAULT_UART, DEFAULT_STATUS, DEFAULT_LOG);
 }
 
@@ -823,11 +1011,20 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--rpc-port") && i + 1 < argc)    cfg.rpc_port = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--rpc-user") && i + 1 < argc)    cfg.rpc_user = argv[++i];
         else if (!strcmp(argv[i], "--rpc-pass") && i + 1 < argc)    cfg.rpc_pass = argv[++i];
+        /* Prefer this over --rpc-pass: an argv password is visible to every
+         * local user via /proc/<pid>/cmdline, and this box serves an
+         * unauthenticated status surface. */
+        else if (!strcmp(argv[i], "--rpc-pass-env") && i + 1 < argc) {
+            const char *v = getenv(argv[++i]);
+            if (v && *v) cfg.rpc_pass = v;
+        }
         else if (!strcmp(argv[i], "--target-shift") && i + 1 < argc) cfg.target_shift = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--status") && i + 1 < argc)      cfg.status_path = argv[++i];
         else if (!strcmp(argv[i], "--log") && i + 1 < argc)         cfg.log_path = argv[++i];
         else if (!strcmp(argv[i], "--submit"))                      cfg.dry_run = 0;
         else if (!strcmp(argv[i], "--synthetic-work"))              cfg.synthetic = 1;
+        else if (!strcmp(argv[i], "--payout-address") && i + 1 < argc) cfg.payout_address = argv[++i];
+        else if (!strcmp(argv[i], "--submit-test"))                 cfg.submit_test = 1;
         else if (!strcmp(argv[i], "--selftest") && i + 1 < argc)    selftest = argv[++i];
         else if (!strcmp(argv[i], "--dump-item")) {
             /* Emit the canonical work item as hex so it can be diffed against
@@ -850,10 +1047,44 @@ int main(int argc, char **argv)
               cfg.uart_dev, cfg.synthetic ? "synthetic" : "gbt",
               cfg.rpc_host, cfg.rpc_port, cfg.target_shift, cfg.dry_run);
 
+    /* Live serialisation proof: pull a real template, build the real block, and
+     * offer it to the node. The PoW will not be met, so the ONLY acceptable
+     * rejection is "high-hash" -- that means the node parsed the whole thing and
+     * merely disagreed about the hash. A parse or bad-txns error would mean the
+     * v2 serialisation is wrong, and the two are indistinguishable from here
+     * without asking the node. */
+    if (cfg.submit_test) {
+        knots_header_t h;
+        if (get_template(&h) != 0) {
+            printf("SUBMIT-TEST: template fetch failed: %s\n", st.last_error);
+            return 1;
+        }
+        printf("SUBMIT-TEST: height=%llu txs=%zu merkle=%s payout=%s\n",
+               (unsigned long long)st.last_template_height,
+               g_tpl.tx_count + 1, st.merkle_root, st.payout_address);
+        submit_block(&h);
+        printf("SUBMIT-TEST: submitted=%llu result=%s\n",
+               (unsigned long long)st.blocks_submitted, st.last_submit);
+        if (strstr(st.last_submit, "high-hash")) {
+            printf("SUBMIT-TEST: PASS - node parsed the block, rejected only the PoW\n");
+            return 0;
+        }
+        printf("SUBMIT-TEST: FAIL - expected high-hash; anything else means the "
+               "serialisation is wrong\n");
+        return 1;
+    }
+
+    /* Block-production tests need no hardware either, and a failure here means
+     * a coinbase that could burn a reward -- so they gate everything else. */
+    if (selftest && !strcmp(selftest, "block")) {
+        return selftest_block_production() ? 1 : 0;
+    }
+
     /* Vector tests need no hardware — run them first so a bad build is obvious. */
     if (!selftest || !strcmp(selftest, "vectors") || !strcmp(selftest, "all")) {
         snprintf(st.phase, sizeof st.phase, "selftest:vectors");
         st.st_vectors = selftest_vectors();
+        if (st.st_vectors == 0) st.st_vectors = selftest_block_production();
         write_status(NULL);
         if (selftest && !strcmp(selftest, "vectors")) return st.st_vectors ? 1 : 0;
         if (st.st_vectors != 0) {
@@ -993,6 +1224,20 @@ int main(int argc, char **argv)
                         if (hash_meets_target(pow, tgt)) {
                             logf_line("SOLUTION nonce=%016llx (submit=%s)",
                                       (unsigned long long)cand, cfg.dry_run ? "no" : "yes");
+                            /* Only a candidate found at real difficulty is a
+                             * block. A bring-up run with an inflated target
+                             * produces them constantly, and submitting those
+                             * would hammer the node with work it must decode
+                             * and reject. */
+                            if (!cfg.dry_run) {
+                                if (cfg.target_shift == BLAKE2B_TARGET_SHIFT_MAINNET)
+                                    submit_block(&c);
+                                else
+                                    logf_line("SUBMIT skipped: target_shift=%u is inflated "
+                                              "(mainnet is %u), so this is not a block",
+                                              cfg.target_shift,
+                                              (unsigned)BLAKE2B_TARGET_SHIFT_MAINNET);
+                            }
                         }
                     }
                 } else {
