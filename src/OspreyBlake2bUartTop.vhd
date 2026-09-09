@@ -54,7 +54,13 @@ entity OspreyBlake2bUartTop is
   generic(
     -- 250 MHz / 115200 baud. Keep in step with clock_mgmt.vhd's MMCM output.
     kBitTimeInClks : positive := 2170;
-    kNonceSeed     : unsigned(63 downto 0) := (others => '1')
+    kNonceSeed     : unsigned(63 downto 0) := (others => '1');
+    -- Debug echo: emit one extra frame per work item, tagged 0x02, carrying the
+    -- TargetTop64 and Stage3In(0) the core actually parsed. It is what proved the
+    -- receive path once the unpack was mirrored, and it costs one frame per work
+    -- item, so it stays in the source but is OFF for production. Synthesis
+    -- constant-folds the whole path away when this is false.
+    kDebugEcho     : boolean := false
   );
   port(
     -- This is the ENTIRE chip interface, and it matches the vendor's
@@ -255,14 +261,23 @@ begin
   -- NewWork is a one-cycle pulse, and WorkData is stable by the cycle after it,
   -- so the echo is registered one cycle late.
   ---------------------------------------------------------------------------
-  DbgEcho: process(aResetInt, MiningClk)
-  begin
-    if aResetInt = '1' then
-      DbgPulse <= false;
-    elsif rising_edge(MiningClk) then
-      DbgPulse <= NewWork;
-    end if;
-  end process;
+  -- OFF for production (kDebugEcho = false): the generate is elaborated away, so
+  -- DbgPulse is a constant false and the reply path below reduces to the plain
+  -- candidate frame. Nothing is left to optimise out at synthesis.
+  DbgOn: if kDebugEcho generate
+    DbgEcho: process(aResetInt, MiningClk)
+    begin
+      if aResetInt = '1' then
+        DbgPulse <= false;
+      elsif rising_edge(MiningClk) then
+        DbgPulse <= NewWork;
+      end if;
+    end process;
+  end generate;
+
+  DbgOff: if not kDebugEcho generate
+    DbgPulse <= false;
+  end generate;
 
   -- The transmitter latches on a RISING edge, so the debug pulse and a candidate
   -- must not be asserted in the same cycle or one would be swallowed. NewWork

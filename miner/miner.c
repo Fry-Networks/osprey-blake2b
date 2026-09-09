@@ -150,9 +150,19 @@ static char *rpc_call(const char *body, size_t *outlen)
 {
     struct sockaddr_in sa;
     char req[1024], auth[256], authb64[512];
-    static char resp[262144];
+    /* 4 MiB, not 256 KiB.
+     *
+     * A mainnet getblocktemplate response is dominated by the transactions
+     * array: measured at 581,678 bytes against a full mempool, and it grows from
+     * there. The five scalars this miner needs sit AFTER that array -- height,
+     * curtime and bits were at offsets ~581,5xx -- so a 256 KiB buffer truncated
+     * the body before any of them arrived and get_template() reported
+     * "template parse failed", which reads like a JSON problem and is actually a
+     * capacity one. */
+    static char resp[4u * 1024u * 1024u];
     int fd = -1;
     size_t got = 0;
+    int truncated = 0;
 
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;
@@ -187,10 +197,20 @@ static char *rpc_call(const char *body, size_t *outlen)
         ssize_t k = read(fd, resp + got, sizeof resp - got - 1);
         if (k <= 0) break;
         got += (size_t)k;
-        if (got >= sizeof resp - 1) break;
+        if (got >= sizeof resp - 1) { truncated = 1; break; }
     }
     close(fd);
     resp[got] = 0;
+
+    /* Say so loudly. A silently truncated body surfaces downstream as
+     * "template parse failed", which sends you looking at the JSON parser
+     * instead of at the buffer. */
+    if (truncated) {
+        snprintf(st.last_error, sizeof st.last_error,
+                 "RPC response hit the %zu-byte buffer and was truncated",
+                 sizeof resp);
+        logf_line("%s", st.last_error);
+    }
     if (outlen) *outlen = got;
     return resp;
 }

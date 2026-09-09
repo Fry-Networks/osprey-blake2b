@@ -56,3 +56,8 @@ stage4_pairs.txt
 # Publish-audit output. It is a run artifact, not source, and its key names have
 # embedded the operator's handle before now.
 reports/publish-audit.json
+
+# Local rollback copies (.bak.<timestamp>). These are this machine's undo path,
+# not source; the bitstream ones are also ~21MB each.
+*.bak
+*.bak.*
