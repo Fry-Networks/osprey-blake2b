@@ -40,3 +40,19 @@ vendor/pachira-algo/
 
 # Raw HARD GATE per-vector output (summary is committed instead)
 reports/hardgate-*-raw.txt
+
+# Cross-compiled miner binaries. The ARM build is shipped from the deploy repo
+# (Fry-Networks/osprey-algo-blake2b), where the device clones it; a second copy
+# here would just drift.
+miner/blake2b
+miner/blake2b_host
+
+# Vivado per-iteration congestion scratch
+iter_*_CongestedCLBsAndNets.txt
+
+# GHDL simulation output
+stage4_pairs.txt
+
+# Publish-audit output. It is a run artifact, not source, and its key names have
+# embedded the operator's handle before now.
+reports/publish-audit.json

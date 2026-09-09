@@ -166,16 +166,32 @@ begin
 
   end generate RoundGen;
 
-  -- Top-64-bit prefilter (same as Sia): Hash0 = H[0] XOR V0 XOR V8 for the
-  -- 12th round. A2_out(kMixRounds-1)(0) is V0, C2_out(kMixRounds-1)(2) is V8.
-  DelayV0: process(Clk)
+  -- Top-64-bit prefilter: Hash0 = H[3] = h3 XOR V3 XOR V11 after the 12th round.
+  --
+  -- Sia takes H[0] here, and this design did too until it was caught on
+  -- hardware. Sia compares its digest in the order blake2b emits it, so its
+  -- leading zeros live in H[0]. Bitcoin does not: the reference builds
+  -- final[31-i] = hash_b[i], so the compare value is the digest BYTE-REVERSED
+  -- and its most significant 8 bytes are digest[31..24] -- that is H[3], not
+  -- H[0]. Prefiltering on H[0] is uncorrelated with the real target, so
+  -- candidates arrive at the expected rate and every one fails verification:
+  -- the miner looks perfectly healthy and finds nothing.
+  --
+  -- Lane mapping. The rounds leave the v-vector in the diagonal-step frame and
+  -- the NEXT round's input un-rotates it, so the un-rotation wiring is what
+  -- defines which raw lane holds which v. For C that wiring is
+  -- C1_in(k) <= C2_out((k+2) mod 4), i.e. un-rotated C(k) = V(8+k). Hence
+  -- V8 = C2_out(2) -- which is what the old H[0] code used, confirming the
+  -- direction -- and therefore V11 = C(3) = C2_out((3+2) mod 4) = C2_out(1).
+  -- A is passed through unrotated (A1_in(i+1) <= A2_out(i)), so V3 = A2_out(3).
+  DelayV3: process(Clk)
   begin
     if rising_edge(Clk) then
-      A2_out_dly <= A2_out(kMixRounds-1)(0);
+      A2_out_dly <= A2_out(kMixRounds-1)(3);
     end if;
   end process;
 
-  Hash0 <= kHin(0) xor A2_out_dly xor C2_out(kMixRounds-1)(2);
+  Hash0 <= kHin(3) xor A2_out_dly xor C2_out(kMixRounds-1)(1);
 
   -- Byte-reverse to big-endian for Bitcoin-style compare.
   Hash0_be <= Hash0( 7 downto  0) & Hash0(15 downto  8) & Hash0(23 downto 16) & Hash0(31 downto 24) &

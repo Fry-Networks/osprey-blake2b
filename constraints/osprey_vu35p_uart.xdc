@@ -1,18 +1,20 @@
 #-----------------------------------------------------------------------------
-# Osprey (VU35P CIV) — constraints for OspreyBlake2bUartTop
+# Osprey (plain VU35P) — constraints for OspreyBlake2bUartTop
 #
-# Part: xcvu35p_CIV-fsvh2104-2-e
+# Part: xcvu35p-fsvh2104-2-e
 #
-# Pin assignments are taken from the vendor's own board constraint file:
-#   PachiraMining/E300_development  hardware/constrain_e300_vu35p_civ.xdc
-# which targets this exact part number. The Osprey firmware reports
-# chipType "vu35p_civ" via its getAllInfo CGI endpoint, matching that file.
+# Pin assignments now come from the vendor's NON-CIV board file:
+#   PachiraMining/E300_development  hardware/constrain_e300_vu35p_non_CIV.xdc
+# This file previously followed ..._vu35p_civ.xdc because the firmware reports
+# chipType "vu35p_civ" -- but that is settable metadata, not a probe, and the
+# board's JTAG IDCODE (0x14b71093 -> part field 4b71093) is plain VU35P per the
+# vendor loader's own table.
 #
-# Signals used here (subset of the vendor pinout):
-#   clk_p / clk_n   BB18 / BC18   LVDS 100 MHz reference, DIFF_TERM_ADV TERM_100
-#   rx              C12           LVCMOS12
-#   tx              B9            LVCMOS12
-#   resetn          BE17          LVCMOS18, active low, driven by the zynq
+# Signals used here (the vendor's whole external interface is rx, tx and four
+# differential clocks -- there is no reset pin):
+#   clk_p / clk_n   BB18 / BC18   LVDS 100 MHz (the vendor's clk2), DIFF_TERM
+#   rx              C12           LVCMOS18
+#   tx              B9            LVCMOS18
 #
 # The vendor design declares its hash clock at period 4.000 ns (250 MHz); this
 # design generates the same rate from the 100 MHz reference via MMCME4_ADV in
@@ -30,25 +32,29 @@ set_property PACKAGE_PIN BB18 [get_ports clk_p]
 set_property PACKAGE_PIN BC18 [get_ports clk_n]
 set_property IOSTANDARD LVDS [get_ports clk_p]
 set_property IOSTANDARD LVDS [get_ports clk_n]
-set_property DIFF_TERM_ADV TERM_100 [get_ports clk_p]
-set_property DIFF_TERM_ADV TERM_100 [get_ports clk_n]
+set_property DIFF_TERM TRUE [get_ports clk_p]
+set_property DIFF_TERM TRUE [get_ports clk_n]
 
 create_clock -period 10.000 -name clk_p [get_ports clk_p]
 
 # --- UART to/from the zynq ----------------------------------------------------
+# LVCMOS18, not LVCMOS12. The vendor file is explicit about this and these pins
+# sit in a 1.8V bank; driving tx as a 1.2V output leaves it below what the zynq
+# receiver reliably reads as a high, which is one of the two reasons this board
+# accepted work and answered with silence.
 set_property PACKAGE_PIN C12 [get_ports rx]
-set_property IOSTANDARD LVCMOS12 [get_ports rx]
+set_property IOSTANDARD LVCMOS18 [get_ports rx]
 set_property PACKAGE_PIN B9 [get_ports tx]
-set_property IOSTANDARD LVCMOS12 [get_ports tx]
+set_property IOSTANDARD LVCMOS18 [get_ports tx]
 
-# --- Reset (active low, external) --------------------------------------------
-set_property PACKAGE_PIN BE17 [get_ports resetn]
-set_property IOSTANDARD LVCMOS18 [get_ports resetn]
+# --- No reset pin -------------------------------------------------------------
+# There was a resetn here on BE17, "active low, driven by the zynq". The vendor's
+# board file has no reset port at all, so BE17 was a guess; if that ball is not
+# actually driven high, the inverted input holds the MMCM and the entire pipeline
+# in reset forever. The design now releases on the MMCM's own Locked output --
+# see OspreyBlake2bUartTop.vhd.
 
 # --- Asynchronous / slow paths ------------------------------------------------
-# resetn is async; double-flopped inside clock_mgmt and the UART.
-set_false_path -from [get_ports resetn]
-
 # rx is asynchronous serial, double-flopped in OspreyBlake2bUartGetWork.
 set_false_path -from [get_ports rx]
 

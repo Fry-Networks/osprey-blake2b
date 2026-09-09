@@ -367,8 +367,16 @@ def _emit_stage4_vectors(n: int, seed: int = 0xCAFED00D) -> None:
         msg = b''.join(struct.pack('<Q', s) for s in slots)
         # Full blake2b of 80B msg
         digest = blake2b_nokey(msg, outlen=32)
-        # Hash0 = digest[0:8] as LE u64
-        hash0_le = struct.unpack('<Q', digest[0:8])[0]
+        # Top word of the Bitcoin-order compare value is H[3], NOT H[0].
+        # This emitter used digest[0:8] (H[0]) to match the RTL, which was itself
+        # wrong: it had inherited Sia's tap. Sia compares the digest in emission
+        # order so its leading zeros are in H[0]; Bitcoin reverses the digest
+        # (final[31-i] = hash_b[i]) so the most significant 8 bytes are
+        # digest[31..24] = H[3]. A wrong oracle here would have "confirmed" the
+        # very bug it was supposed to catch, so it is corrected rather than kept
+        # in step with the RTL. tb/tb_stage4_prefilter.vhd is the real gate; it
+        # checks against hashlib directly.
+        hash0_le = struct.unpack('<Q', digest[24:32])[0]
         # Hash0_be = byte-reverse of Hash0
         hash0_be = struct.unpack('>Q', struct.pack('<Q', hash0_le))[0]
         # TargetTop64 = hash0_be + 1 (so hash < target = True, Success rises)
