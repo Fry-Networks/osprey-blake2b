@@ -159,21 +159,41 @@ Utilization is ~11%, so roughly eight parallel cores would fit on the device.
 
 ## Caveats — what remains before real hardware bring-up
 
-- **Pin LOCs.** `constraints/osprey_vu35p.xdc` uses placeholder pin LOCs
-  flagged `# ASSUMED_PIN` / `# TODO_PIN`. The Osprey E100 board schematic
-  is not published; a contributor with board access must fill the real
-  LOCs before synthesis will produce a usable bitstream.
-- **Zynq–PL interconnect.** The top-level exposes ~1408 wires
+- **Pin LOCs — RESOLVED.** `constraints/osprey_vu35p.xdc` (the original
+  OOC/core-boundary placeholder file, still flagged `# ASSUMED_PIN` /
+  `# TODO_PIN`) is superseded for real bring-up by
+  `constraints/osprey_vu35p_uart.xdc`, which already carries the real
+  vendor pins for the chip-level UART wrapper (`clk_p`/`clk_n`=BB18/BC18
+  LVDS, `rx`=C12, `tx`=B9, all LVCMOS18, no reset pin) sourced from
+  `PachiraMining/E300_development hardware/constrain_e300_vu35p_non_CIV.xdc`.
+  This has been independently cross-checked against another team's E300
+  pin-forensics effort (bitstream IOB-frame decoding + `devmem2` register
+  validation on real VU33P/VU35P/VU9P/VU7P hardware) and the pins agree
+  exactly — clock, UART pins, IOSTANDARD, and the absence of a real reset
+  pin (the vendor's own board files never expose one; treat any `resetn`
+  LOC as an unverified guess, as this repo's own `OspreyBlake2bUartTop.vhd`
+  header now correctly notes).
+- **Zynq–PL interconnect — RESOLVED.** The top-level exposes ~1408 wires
   (Stage3In + Stage4In + TargetTop64 + Nonce + HashTop64). A real Osprey
   build needs a UART / I²C / AXI-Lite wrapper to serialize these across
-  the physical Zynq–PL bus. The wrapper is out of scope for this initial
-  import (see `constraints/osprey_vu35p.xdc` `OUT-OF-SCOPE-DISCOVERED`
-  checklist at file bottom).
+  the physical Zynq–PL bus. `OspreyBlake2bUartTop.vhd` now implements
+  exactly this, bringing chip IO down to 5 pins — see `build/synth.tcl`'s
+  `full` mode.
 - **Deployment.** The Osprey firmware exposes a CGI endpoint
   (`Page=setDracaenaAlgoStatus`) that accepts custom git-managed algo
   modules with matching `/opt/<algo>/bits/` layout. This has not been
   round-tripped end-to-end. Do not deploy against a producing miner
   without a full config + bitstream backup first.
+  **Bitstream programming hazard:** on E300-family boards (Zynq PS
+  managing external UltraScale+ PL chips over JTAG), do **not** attempt
+  to program via `/dev/fpga0` or the Zynq `DEVCFG` PROG_B path — that
+  path is for the Zynq's *own* PL fabric, not an externally-attached
+  chip, and driving it against an external FPGA has been observed to
+  crash the Zynq PS outright on this board family. The chips are reached
+  over JTAG through memory-mapped AXI-JTAG bridge cores (one per chip),
+  which is the path any deployment tooling must use, with correct
+  handling of multi-SLR devices (VU9P/VU35P are 3-SLR; VU33P is 1-SLR)
+  during the JTAG programming sequence.
 - **Pool.** Bitcoin Knots BLAKE2b pool support is nascent. The Msg(4)
   grind expectation matches Sia, but the surrounding stratum contract
   (share submission format, target format) must be aligned with whatever
