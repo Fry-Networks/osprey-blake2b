@@ -23,9 +23,14 @@
 #include "coinbase.h"
 #include "devfee.h"
 #include "merkle.h"
+#include "worksrc.h"
+#include "worksrc_stratum.h"
+#include "sia_stratum.h"
 
 /* selftest_block.c */
 int selftest_block_production(void);
+/* selftest_stratum.c */
+int selftest_stratum(void);
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -37,6 +42,15 @@ int selftest_block_production(void);
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Which product this build is. Both binaries come from this source tree; the
+ * banner is the first line in boot.log and saying the wrong name there sends
+ * a reader to the wrong module's logs. */
+#ifdef OSPREY_DEFAULT_ALGO_SIA
+#define MINER_NAME "siacoin"
+#else
+#define MINER_NAME "blake2b"
+#endif
 
 #define DEFAULT_UART   "/dev/uio8"
 #define DEFAULT_STATUS "/var/www/html/blake2b/status.json"
@@ -59,11 +73,36 @@ static struct {
     int         synthetic;      /* build work locally instead of calling getblocktemplate */
     const char *payout_address; /* where block rewards go; dev fee overrides 1 in 20 */
     int         submit_test;    /* build a real block and offer it to the node */
+    int         stratum_probe;  /* connect, grind one share in software, offer it */
+    /* Pool mining. Absent --stratum the miner behaves exactly as before: the
+     * work source stays "gbt" (or "synthetic"), and none of this is consulted. */
+    const char *stratum_host;
+    int         stratum_port;
+    const char *worker;
+    const char *pool_pass;
+    const char *devfee_pool;
+    const char *devfee_worker;
+    const char *devfee_pass;
+    /* Which chain's rules ride on the Sia stratum transport. The siacoin binary
+     * is built with OSPREY_DEFAULT_ALGO_SIA so it defaults correctly; --algo
+     * overrides either way, which is what makes a single source tree testable
+     * for both without two mining loops. */
+    int         chain;
 } cfg = {
     DEFAULT_UART, DEFAULT_STATUS, DEFAULT_LOG,
     "127.0.0.1", 4001, NULL, NULL,
-    BLAKE2B_TARGET_SHIFT_MAINNET, 1, 0, NULL, 0
+    BLAKE2B_TARGET_SHIFT_MAINNET, 1, 0, NULL, 0, 0,
+    NULL, 0, NULL, NULL, NULL, NULL, NULL,
+#ifdef OSPREY_DEFAULT_ALGO_SIA
+    WORKSRC_CHAIN_SIA
+#else
+    WORKSRC_CHAIN_KNOTS
+#endif
 };
+
+/* The selected work source. Set in main() before the mining loop; never NULL
+ * once mining starts. */
+static const worksrc_t *g_src;
 
 static struct {
     uint64_t items_sent, frames_ok, frames_bad, candidates_verified;
@@ -118,6 +157,50 @@ static void logf_line(const char *fmt, ...)
     if (f) { fprintf(f, "[%llu] %s\n", (unsigned long long)now_s(), buf); fclose(f); }
 }
 
+/* The pool section of status.json, or "" in solo mode.
+ *
+ * The dev-fee numbers here are deliberately four separate counters rather than
+ * one percentage. In pool mode the fee is taken by mining one job in twenty for
+ * the developer's own pool account, and when no dev pool is configured that job
+ * cannot be redirected -- so "scheduled" and "actually mined" are different
+ * numbers, and collapsing them would report a fee that is not being taken. This
+ * file is served unauthenticated over HTTP and is the only window into the box;
+ * a number that quietly means something other than what it says is worse here
+ * than a missing one. */
+static const char *pool_json(void)
+{
+    static char buf[1024];
+    /* Both pool backends report here; only the solo sources have nothing to say. */
+    if (!g_src || (strcmp(g_src->name, "stratum") != 0 &&
+                   strcmp(g_src->name, "sia") != 0)) return "";
+
+    worksrc_stratum_status_t p;
+    worksrc_stratum_status(&p);
+    snprintf(buf, sizeof buf,
+        "  \"pool\": {\n"
+        "    \"url\": \"%s\", \"connected\": %s, \"authorized\": %s, \"has_job\": %s,\n"
+        "    \"difficulty\": %g, \"job_id\": \"%s\", \"jobs_received\": %llu,\n"
+        "    \"shares_submitted\": %llu, \"shares_accepted\": %llu, \"shares_rejected\": %llu,\n"
+        "    \"reconnects\": %llu, \"last_reject\": \"%s\"\n"
+        "  },\n"
+        "  \"devfee_pool_jobs\": %llu,\n"
+        "  \"devfee_pool_dev_jobs\": %llu,\n"
+        "  \"devfee_pool_skipped\": %llu,\n"
+        "  \"devfee_pool_shares\": %llu,\n",
+        p.pool, p.connected ? "true" : "false", p.authorized ? "true" : "false",
+        p.has_job ? "true" : "false", p.difficulty, p.job_id,
+        (unsigned long long)p.jobs_received,
+        (unsigned long long)p.shares_submitted,
+        (unsigned long long)p.shares_accepted,
+        (unsigned long long)p.shares_rejected,
+        (unsigned long long)p.reconnects, p.last_reject,
+        (unsigned long long)devfee_pool_jobs(),
+        (unsigned long long)devfee_pool_dev_jobs(),
+        (unsigned long long)devfee_pool_skipped(),
+        (unsigned long long)devfee_pool_shares());
+    return buf;
+}
+
 static void write_status(uio_uart_t *u)
 {
     char tmp[512];
@@ -149,6 +232,8 @@ static void write_status(uio_uart_t *u)
         "  \"blocks_submitted\": %llu,\n"
         "  \"blocks_accepted\": %llu,\n"
         "  \"last_submit_result\": \"%s\",\n"
+        "  \"worksrc\": \"%s\",\n"
+        "%s"
         "  \"developer\": \"Fry Networks\",\n"
         "  \"last_error\": \"%s\"\n"
         "}\n",
@@ -170,6 +255,8 @@ static void write_status(uio_uart_t *u)
         (unsigned long long)st.blocks_submitted,
         (unsigned long long)st.blocks_accepted,
         st.last_submit,
+        g_src ? g_src->name : "none",
+        pool_json(),
         st.last_error);
     fclose(f);
     rename(tmp, cfg.status_path);
@@ -525,6 +612,89 @@ static uint64_t expected_hash_top64(const knots_header_t *h)
     for (int i = 24; i < 32; ++i) v = (v << 8) | hb[i];
     return v;
 }
+
+/* ------------------------------------------------------------------ */
+/* Work sources                                                        */
+/* ------------------------------------------------------------------ */
+/* Thin adapters over the functions above, nothing more. get_template(),
+ * submit_block() and synthetic_template() are untouched and keep their exact
+ * previous behaviour -- the seam is the vtable, not a rewrite of the solo path,
+ * so a bug in pool mode cannot change how solo mining behaves.
+ *
+ * The header the current work item was built from lives here rather than in the
+ * mining loop, because that is the one piece of state a candidate needs and it
+ * belongs to whichever source produced it. */
+static knots_header_t g_gbt_hdr;
+
+static int gbt_build(work_ctx_t *ctx, int synthetic)
+{
+    knots_header_t h;
+    uint64_t t = now_s();
+
+    if ((synthetic ? synthetic_template(&h, t) : get_template(&h)) != 0) return -1;
+
+    /* Vary the swept space per push, as the loop did before this moved. */
+    h.m_extranonce[0] = (uint8_t)(t & 0xff);
+    h.m_extranonce[1] = (uint8_t)((t >> 8) & 0xff);
+
+    uint8_t hash_a[32];
+    if (stage_inputs(&h, ctx->ss3, ctx->ss4, hash_a) != 0) return -1;
+
+    ctx->target_top64 = target_top64_from_bits(h.nBits, cfg.target_shift);
+    ctx->valid = 1;
+    g_gbt_hdr = h;
+    return 0;
+}
+
+static int gbt_get_work(work_ctx_t *ctx)       { return gbt_build(ctx, 0); }
+static int synthetic_get_work(work_ctx_t *ctx) { return gbt_build(ctx, 1); }
+
+static int gbt_on_candidate(const work_ctx_t *ctx, uint64_t nonce, uint64_t hash_top64)
+{
+    (void)ctx;
+    knots_header_t c = g_gbt_hdr;
+    c.nNonce   = (uint32_t)(nonce & 0xffffffffu);
+    c.m_nonce2 = (uint32_t)(nonce >> 32);
+
+    if (expected_hash_top64(&c) != hash_top64) return WORKSRC_CAND_BAD;
+
+    uint8_t pow[32], tgt[32];
+    if (get_pow_hash(&c, pow) != 0) return WORKSRC_CAND_OK;
+
+    compact_to_target_shifted(c.nBits, BLAKE2B_TARGET_SHIFT_MAINNET, tgt);
+    if (!hash_meets_target(pow, tgt)) return WORKSRC_CAND_OK;
+
+    logf_line("SOLUTION nonce=%016llx (submit=%s)",
+              (unsigned long long)nonce, cfg.dry_run ? "no" : "yes");
+    if (!cfg.dry_run) {
+        /* Only a candidate found at real difficulty is a block. A bring-up run
+         * with an inflated target produces them constantly, and submitting
+         * those would hammer the node with work it must decode and reject. */
+        if (cfg.target_shift == BLAKE2B_TARGET_SHIFT_MAINNET)
+            submit_block(&c);
+        else
+            logf_line("SUBMIT skipped: target_shift=%u is inflated "
+                      "(mainnet is %u), so this is not a block",
+                      cfg.target_shift, (unsigned)BLAKE2B_TARGET_SHIFT_MAINNET);
+    }
+    return WORKSRC_CAND_SOLUTION;
+}
+
+static const worksrc_t g_worksrc_gbt = {
+    .name = "gbt", .get_work = gbt_get_work, .poll = NULL,
+    .on_candidate = gbt_on_candidate, .refresh_s = 30,
+    .item_len = WORK_ITEM_LEN,
+};
+
+static const worksrc_t g_worksrc_synthetic = {
+    .name = "synthetic", .get_work = synthetic_get_work, .poll = NULL,
+    .on_candidate = gbt_on_candidate, .refresh_s = 30,
+    .item_len = WORK_ITEM_LEN,
+};
+
+/* stratum.c and worksrc_stratum.c cannot call logf_line(), which is static, so
+ * they are handed this. */
+static void worksrc_log_sink(const char *line) { logf_line("%s", line); }
 
 /* ------------------------------------------------------------------ */
 /* Selftests                                                           */
@@ -993,8 +1163,23 @@ static void usage(void)
         "  --payout-address A   bech32 address for the coinbase (default: dev fee address)\n"
         "  --submit-test        build a block from a live template and offer it to\n"
         "                       the node; it must be rejected high-hash, not unparsed\n"
-        "  --selftest WHAT      vectors | block | uart | loopback | rxdump | all\n",
-        DEFAULT_UART, DEFAULT_STATUS, DEFAULT_LOG);
+        "  --selftest WHAT      vectors | block | stratum | uart | loopback | rxdump | all\n"
+        "\n"
+        " pool mining (Sia-dialect Stratum v1); without --stratum nothing here applies\n"
+        "  --stratum HOST:PORT  mine to a pool instead of getblocktemplate\n"
+        "  --worker NAME        pool worker name\n"
+        "  --pool-pass PASS     visible in /proc/<pid>/cmdline; prefer --pool-pass-env\n"
+        "  --pool-pass-env VAR  read the pool password from environment VAR\n"
+        "  --devfee-pool H:P    dev-fee pool for the 1-in-%d job; empty = fee counted,\n"
+        "                       reported, and NOT taken\n"
+        "  --devfee-worker NAME dev-fee worker name\n"
+        "  --devfee-pass PASS   dev-fee pool password\n"
+        "  --stratum-probe      connect, grind one share in software and offer it;\n"
+        "                       proves the pool path with no FPGA involved\n"
+        "  --algo WHICH         sia | knots. Which chain's compare rule and work-item\n"
+        "                       layout to use on top of the Sia stratum transport.\n"
+        "                       Defaults to the one this binary was built for.\n",
+        DEFAULT_UART, DEFAULT_STATUS, DEFAULT_LOG, DEVFEE_INTERVAL);
 }
 
 int main(int argc, char **argv)
@@ -1026,6 +1211,38 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--payout-address") && i + 1 < argc) cfg.payout_address = argv[++i];
         else if (!strcmp(argv[i], "--submit-test"))                 cfg.submit_test = 1;
         else if (!strcmp(argv[i], "--selftest") && i + 1 < argc)    selftest = argv[++i];
+        /* ---- pool mining ---- */
+        else if (!strcmp(argv[i], "--stratum") && i + 1 < argc) {
+            /* Split on the LAST colon so an IPv6 literal, should one ever be
+             * configured, does not silently lose its address. */
+            static char hostbuf[192];
+            snprintf(hostbuf, sizeof hostbuf, "%s", argv[++i]);
+            char *colon = strrchr(hostbuf, ':');
+            if (!colon || !colon[1]) {
+                fprintf(stderr, "--stratum wants HOST:PORT, got '%s'\n", hostbuf);
+                return 2;
+            }
+            *colon = '\0';
+            cfg.stratum_host = hostbuf;
+            cfg.stratum_port = atoi(colon + 1);
+        }
+        else if (!strcmp(argv[i], "--worker") && i + 1 < argc)        cfg.worker = argv[++i];
+        else if (!strcmp(argv[i], "--pool-pass") && i + 1 < argc)     cfg.pool_pass = argv[++i];
+        else if (!strcmp(argv[i], "--pool-pass-env") && i + 1 < argc) {
+            const char *v = getenv(argv[++i]);
+            if (v && *v) cfg.pool_pass = v;
+        }
+        else if (!strcmp(argv[i], "--devfee-pool") && i + 1 < argc)   cfg.devfee_pool = argv[++i];
+        else if (!strcmp(argv[i], "--devfee-worker") && i + 1 < argc) cfg.devfee_worker = argv[++i];
+        else if (!strcmp(argv[i], "--devfee-pass") && i + 1 < argc)   cfg.devfee_pass = argv[++i];
+        else if (!strcmp(argv[i], "--stratum-probe"))                 cfg.stratum_probe = 1;
+        else if (!strcmp(argv[i], "--algo") && i + 1 < argc) {
+            const char *a = argv[++i];
+            if      (!strcmp(a, "sia"))                  cfg.chain = WORKSRC_CHAIN_SIA;
+            else if (!strcmp(a, "knots") || !strcmp(a, "blake2b"))
+                                                         cfg.chain = WORKSRC_CHAIN_KNOTS;
+            else { fprintf(stderr, "--algo wants sia | knots, got '%s'\n", a); return 2; }
+        }
         else if (!strcmp(argv[i], "--dump-item")) {
             /* Emit the canonical work item as hex so it can be diffed against
              * zynq/build_work_item.py. Header matches that script's example:
@@ -1043,9 +1260,35 @@ int main(int argc, char **argv)
         else { usage(); return 2; }
     }
 
-    logf_line("blake2b miner starting: uart=%s worksrc=%s rpc=%s:%d target_shift=%u dry_run=%d",
-              cfg.uart_dev, cfg.synthetic ? "synthetic" : "gbt",
-              cfg.rpc_host, cfg.rpc_port, cfg.target_shift, cfg.dry_run);
+    /* Register the sources and pick one. --stratum wins, then --synthetic-work,
+     * then the historical default. Nothing below this line changes behaviour
+     * for a command line that does not mention a pool. */
+    worksrc_register(&g_worksrc_gbt);
+    worksrc_register(&g_worksrc_synthetic);
+    const char *want = cfg.synthetic ? "synthetic" : "gbt";
+    if (cfg.stratum_host) {
+        worksrc_stratum_configure((worksrc_chain_t)cfg.chain,
+                                  cfg.stratum_host, cfg.stratum_port,
+                                  cfg.worker ? cfg.worker : "osprey",
+                                  cfg.pool_pass,
+                                  cfg.devfee_pool, cfg.devfee_worker, cfg.devfee_pass,
+                                  worksrc_log_sink);
+        const worksrc_t *b = worksrc_stratum_backend();
+        worksrc_register(b);
+        want = b->name;
+    }
+    g_src = worksrc_find(want);
+    if (!g_src) { fprintf(stderr, "no work source (have: %s)\n", worksrc_list()); return 2; }
+
+    if (cfg.stratum_host)
+        logf_line("%s miner starting: uart=%s worksrc=%s pool=%s:%d worker=%s "
+                  "target_shift=%u dry_run=%d",
+                  MINER_NAME, cfg.uart_dev, g_src->name, cfg.stratum_host, cfg.stratum_port,
+                  cfg.worker ? cfg.worker : "osprey", cfg.target_shift, cfg.dry_run);
+    else
+        logf_line("%s miner starting: uart=%s worksrc=%s rpc=%s:%d target_shift=%u dry_run=%d",
+                  MINER_NAME, cfg.uart_dev, g_src->name,
+                  cfg.rpc_host, cfg.rpc_port, cfg.target_shift, cfg.dry_run);
 
     /* Live serialisation proof: pull a real template, build the real block, and
      * offer it to the node. The PoW will not be met, so the ONLY acceptable
@@ -1074,10 +1317,100 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Live proof of the pool path, with no FPGA involved: connect, take a real
+     * job, grind it in software, and offer the share. The counterpart of
+     * --submit-test for solo mining -- it answers "is what we send something
+     * the pool accepts", which nothing else can answer, because the FPGA's
+     * prefilter and the pool's difficulty are independent problems.
+     *
+     * Run it against zynq/stratum_test_server.py for a deterministic answer;
+     * the production pool pins difficulty at 4096, where a software grind would
+     * take days. */
+    if (cfg.stratum_probe) {
+        if (!cfg.stratum_host) { fprintf(stderr, "--stratum-probe needs --stratum\n"); return 2; }
+
+        printf("STRATUM-PROBE: connecting to %s:%d as %s\n",
+               cfg.stratum_host, cfg.stratum_port, cfg.worker ? cfg.worker : "osprey");
+
+        work_ctx_t ctx;
+        memset(&ctx, 0, sizeof ctx);
+        uint64_t deadline = now_s() + 45;
+        while (now_s() < deadline) {
+            g_src->poll(now_s());
+            if (g_src->get_work(&ctx) == 0) break;
+            usleep(50000);
+        }
+        if (!ctx.valid) {
+            printf("STRATUM-PROBE: FAIL - no job within 45s\n");
+            return 1;
+        }
+
+        worksrc_stratum_status_t ps;
+        worksrc_stratum_status(&ps);
+        printf("STRATUM-PROBE: job=%s difficulty=%g target_top64=%016llx\n",
+               ps.job_id, ps.difficulty, (unsigned long long)ctx.target_top64);
+
+        /* Grind the same 64-bit slot the FPGA would. The software check here is
+         * the full 256-bit share target, not the 64-bit prefilter, so a share
+         * that passes is a share the pool must accept. */
+        uint64_t n = 0, found = 0;
+        int have = 0;
+        uint64_t stop = now_s() + 120;
+        for (; n < (uint64_t)1 << 40; ++n) {
+            /* Stand in for the FPGA: report the word the core would report for
+             * this nonce, on THIS chain. Using the other chain's word here would
+             * make on_candidate reject every nonce as unverifiable, which reads
+             * as a broken pipeline rather than a probe bug. */
+            uint64_t word = (cfg.chain == WORKSRC_CHAIN_SIA)
+                          ? sia_chain_expected_top64(ctx.ss4, n)
+                          : sia_expected_top64(ctx.ss4, n);
+            if (g_src->on_candidate(&ctx, n, word) == WORKSRC_CAND_SOLUTION) {
+                found = n; have = 1; break;
+            }
+            if ((n & 0xfffff) == 0 && now_s() > stop) break;
+        }
+        if (!have) {
+            printf("STRATUM-PROBE: FAIL - no share in %llu hashes\n",
+                   (unsigned long long)n);
+            return 1;
+        }
+        printf("STRATUM-PROBE: share found after %llu hashes, nonce=%016llx\n",
+               (unsigned long long)n, (unsigned long long)found);
+
+        /* The verdict arrives asynchronously; poll until it lands. */
+        deadline = now_s() + 30;
+        while (now_s() < deadline) {
+            g_src->poll(now_s());
+            worksrc_stratum_status(&ps);
+            if (ps.shares_accepted || ps.shares_rejected) break;
+            usleep(50000);
+        }
+        worksrc_stratum_status(&ps);
+        printf("STRATUM-PROBE: submitted=%llu accepted=%llu rejected=%llu%s%s\n",
+               (unsigned long long)ps.shares_submitted,
+               (unsigned long long)ps.shares_accepted,
+               (unsigned long long)ps.shares_rejected,
+               ps.last_reject[0] ? " reason=" : "", ps.last_reject);
+        if (ps.shares_accepted) {
+            printf("STRATUM-PROBE: PASS - the pool accepted a share built by this miner\n");
+            return 0;
+        }
+        printf("STRATUM-PROBE: FAIL - the share was not accepted\n");
+        return 1;
+    }
+
     /* Block-production tests need no hardware either, and a failure here means
      * a coinbase that could burn a reward -- so they gate everything else. */
     if (selftest && !strcmp(selftest, "block")) {
         return selftest_block_production() ? 1 : 0;
+    }
+
+    /* Stratum decode is pure computation -- no socket, no hardware -- so it
+     * runs anywhere, including on the build host. It is graded here rather than
+     * only under --selftest stratum because a miner that ships with a broken
+     * job decode produces zero shares and looks exactly like a dead pool. */
+    if (selftest && !strcmp(selftest, "stratum")) {
+        return selftest_stratum() ? 1 : 0;
     }
 
     /* Vector tests need no hardware — run them first so a bad build is obvious. */
@@ -1114,23 +1447,60 @@ int main(int argc, char **argv)
         return rc ? 1 : 0;
     }
 
-    snprintf(st.phase, sizeof st.phase, "selftest:loopback");
-    st.st_loopback = selftest_loopback(&u);
-    write_status(&u);
-    if (selftest && (!strcmp(selftest, "loopback") || !strcmp(selftest, "all"))) {
-        uart_close(&u);
-        return st.st_loopback ? 1 : 0;
-    }
-    if (st.st_loopback != 0) {
-        snprintf(st.last_error, sizeof st.last_error, "loopback failed; FPGA not answering");
+    /* The loopback calibration is Knots-specific, and on the Siacoin bitstream
+     * it is not merely inapplicable -- it is actively harmful.
+     *
+     * It builds a 168-byte Knots work item, sweeps 168 receive phases and
+     * verifies by reproducing a Knots hash, none of which the Siacoin core can
+     * satisfy. Worse, the FPGA's receiver is a free-running mod-N byte counter
+     * with no framing: N is 88 there, and 168 mod 88 = 80, so every probe would
+     * leave the counter rotated by 80 bytes and permanently misalign the real
+     * work items that follow. Running it cost 3 s x 168 phases = 8.4 minutes per
+     * attempt, and with Restart=always the module simply looped forever without
+     * ever reaching its mining loop.
+     *
+     * Skipping it is also safe in a way it is not for Knots. The loader has just
+     * programmed the part, so the receive counter is at zero; sending exactly
+     * item_len bytes per item and never dropping one (the TX_FULL gate) keeps it
+     * there. The phase search exists to recover from an alignment inherited from
+     * whatever ran before, which a fresh bitstream load has already done.
+     *
+     * What the loopback would have proven -- that the FPGA's reported word can
+     * be reproduced in software -- the mining loop proves continuously through
+     * candidates_verified, and the RTL itself is gated by tb_sia_core's 300/300
+     * against an independent oracle. */
+    if (cfg.chain == WORKSRC_CHAIN_SIA) {
+        st.st_loopback = 0;
+        /* Same pipeline depth and the same NonceOut compensation as the Knots
+         * core, where the calibration empirically lands on 0. Logged as an
+         * assumption because it is one: if it were wrong, every candidate would
+         * fail to reproduce and candidates_verified would stay at zero. */
+        st.nonce_offset = 0;
+        logf_line("loopback: SKIPPED on the sia chain -- the probe is a 168-byte "
+                  "Knots item and this core takes 88, so it would rotate the "
+                  "FPGA's receive counter by 80 bytes. nonce_offset assumed 0; "
+                  "watch candidates_verified to confirm.");
         write_status(&u);
-        uart_close(&u);
-        return 1;
+    } else {
+        snprintf(st.phase, sizeof st.phase, "selftest:loopback");
+        st.st_loopback = selftest_loopback(&u);
+        write_status(&u);
+        if (selftest && (!strcmp(selftest, "loopback") || !strcmp(selftest, "all"))) {
+            uart_close(&u);
+            return st.st_loopback ? 1 : 0;
+        }
+        if (st.st_loopback != 0) {
+            snprintf(st.last_error, sizeof st.last_error, "loopback failed; FPGA not answering");
+            write_status(&u);
+            uart_close(&u);
+            return 1;
+        }
     }
 
     /* ---- mining loop ---- */
     snprintf(st.phase, sizeof st.phase, "mining");
-    knots_header_t h;
+    work_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
     uint8_t item[WORK_ITEM_LEN], frame[RESULT_LEN];
     size_t got = 0;
     int synced = 0, bad_run = 0;
@@ -1140,37 +1510,49 @@ int main(int argc, char **argv)
     for (;;) {
         uint64_t t = now_s();
 
+        /* Let the source service its own I/O. For gbt this is NULL; for a pool
+         * it is where the socket gets read, so it must run every pass and never
+         * block -- the UART drain below is the real-time obligation here. */
+        if (g_src->poll) g_src->poll(t);
+
         /* Roll work on a new template. Never resend on Success: Enable stays
          * high and the FPGA keeps grinding; resending would reload the nonce
          * iterator to the seed and re-find the same candidate forever. */
-        if (!have_work || t - last_template >= 30) {
-            int got_work = cfg.synthetic ? synthetic_template(&h, t) : get_template(&h);
-            if (got_work == 0) {
-                h.m_extranonce[0] = (uint8_t)(t & 0xff);   /* vary the swept space */
-                h.m_extranonce[1] = (uint8_t)((t >> 8) & 0xff);
-                uint64_t tgt = target_top64_from_bits(h.nBits, cfg.target_shift);
-                if (build_work_item(&h, tgt, item) == 0) {
-                    if (uart_wait_quiet(&u, QUIET_IDLE_US, QUIET_WAIT_US) != 0)
-                        logf_line("quiet gate timed out before work push");
-                    if (uart_write(&u, item, WORK_ITEM_LEN, TX_TIMEOUT_US) == 0) {
-                        uart_drain_tx(&u, 500000);
-                        st.items_sent++;
-                        have_work = 1;
-                        got = 0;
-                        /* A new item reloads the nonce iterator and restarts the
-                         * reply stream, so the old frame boundary is gone. Re-sync
-                         * rather than carrying the previous alignment forward:
-                         * without this, every push cost one straddled frame, which
-                         * showed up as frames_bad tracking items_sent almost
-                         * one-for-one. */
-                        synced = 0;
-                        logf_line("work pushed: height=%llu bits=%08x target_top64=%016llx",
-                                  (unsigned long long)st.last_template_height,
-                                  h.nBits, (unsigned long long)tgt);
-                    } else {
-                        snprintf(st.last_error, sizeof st.last_error, "TX stalled pushing work");
-                        logf_line("%s", st.last_error);
-                    }
+        if (!have_work || t - last_template >= g_src->refresh_s) {
+            work_ctx_t next;
+            memset(&next, 0, sizeof next);
+            if (g_src->get_work(&next) == 0) {
+                size_t ilen = worksrc_pack_item(&next, g_src->item_len, item);
+                if (ilen == 0) {
+                    snprintf(st.last_error, sizeof st.last_error,
+                             "work source %s asked for a %zu-byte item, which has no layout",
+                             g_src->name, g_src->item_len);
+                    logf_line("%s", st.last_error);
+                    last_template = t;
+                    continue;
+                }
+                if (uart_wait_quiet(&u, QUIET_IDLE_US, QUIET_WAIT_US) != 0)
+                    logf_line("quiet gate timed out before work push");
+                if (uart_write(&u, item, ilen, TX_TIMEOUT_US) == 0) {
+                    uart_drain_tx(&u, 500000);
+                    ctx = next;
+                    st.items_sent++;
+                    have_work = 1;
+                    got = 0;
+                    /* A new item reloads the nonce iterator and restarts the
+                     * reply stream, so the old frame boundary is gone. Re-sync
+                     * rather than carrying the previous alignment forward:
+                     * without this, every push cost one straddled frame, which
+                     * showed up as frames_bad tracking items_sent almost
+                     * one-for-one. */
+                    synced = 0;
+                    logf_line("work pushed: src=%s height=%llu target_top64=%016llx",
+                              g_src->name,
+                              (unsigned long long)st.last_template_height,
+                              (unsigned long long)next.target_top64);
+                } else {
+                    snprintf(st.last_error, sizeof st.last_error, "TX stalled pushing work");
+                    logf_line("%s", st.last_error);
                 }
             }
             last_template = t;
@@ -1207,43 +1589,27 @@ int main(int argc, char **argv)
                 st.frames_ok++;
 
                 uint64_t cand = r.nonce + (uint64_t)st.nonce_offset;
-                knots_header_t c = h;
-                c.nNonce   = (uint32_t)(cand & 0xffffffffu);
-                c.m_nonce2 = (uint32_t)(cand >> 32);
 
                 snprintf(st.last_nonce, sizeof st.last_nonce, "%016llx",
                          (unsigned long long)cand);
                 snprintf(st.last_hash, sizeof st.last_hash, "%016llx",
                          (unsigned long long)r.hash_top64);
 
-                if (expected_hash_top64(&c) == r.hash_top64) {
-                    st.candidates_verified++;
-                    uint8_t pow[32], tgt[32];
-                    if (get_pow_hash(&c, pow) == 0) {
-                        compact_to_target_shifted(c.nBits, BLAKE2B_TARGET_SHIFT_MAINNET, tgt);
-                        if (hash_meets_target(pow, tgt)) {
-                            logf_line("SOLUTION nonce=%016llx (submit=%s)",
-                                      (unsigned long long)cand, cfg.dry_run ? "no" : "yes");
-                            /* Only a candidate found at real difficulty is a
-                             * block. A bring-up run with an inflated target
-                             * produces them constantly, and submitting those
-                             * would hammer the node with work it must decode
-                             * and reject. */
-                            if (!cfg.dry_run) {
-                                if (cfg.target_shift == BLAKE2B_TARGET_SHIFT_MAINNET)
-                                    submit_block(&c);
-                                else
-                                    logf_line("SUBMIT skipped: target_shift=%u is inflated "
-                                              "(mainnet is %u), so this is not a block",
-                                              cfg.target_shift,
-                                              (unsigned)BLAKE2B_TARGET_SHIFT_MAINNET);
-                            }
-                        }
-                    }
-                } else {
+                /* Verification and submission belong to the source: solo mining
+                 * compares against the network target and serialises a whole
+                 * block, a pool compares against the share target and sends
+                 * mining.submit. Neither rule generalises to the other. */
+                int verdict = g_src->on_candidate(&ctx, cand, r.hash_top64);
+                if (verdict == WORKSRC_CAND_BAD) {
                     st.frames_bad++;
+                    /* Name the word this chain actually taps. The two cores use
+                     * different digest words, and a message asserting the wrong
+                     * one sends the reader looking for a bug that is not there. */
                     snprintf(st.last_error, sizeof st.last_error,
-                             "hash_top64 mismatch (prefilter word is H[3])");
+                             "hash_top64 mismatch (prefilter word is %s)",
+                             cfg.chain == WORKSRC_CHAIN_SIA ? "H[0]" : "H[3]");
+                } else {
+                    st.candidates_verified++;
                 }
             }
         }

@@ -19,8 +19,8 @@ targeting the Osprey E100 miner (Xilinx Virtex UltraScale+ VU35P,
 | Chip-level UART wrapper                | Complete (`src/OspreyBlake2bUartTop.vhd`) — 5 board pins |
 | Vivado synthesis + P&R                 | **Complete** — timing met, 0 routing errors, DRC 0 errors |
 | `.bit` artifact                        | Built (21.3 MB). Not committed — see Releases |
-| Osprey deployment glue (CGI upload)    | **NOT PROVIDED** — deployment path documented, not tested |
-| Zynq-side miner binary                 | **NOT PROVIDED** — see "What remains" |
+| Osprey deployment glue (CGI algo module) | **PROVIDED** — `Fry-Networks/osprey-algo-blake2b`, round-tripped on hardware |
+| Zynq-side miner binary                 | **PROVIDED** — `miner/`, solo GBT and Sia-dialect Stratum v1 |
 
 Evidence file: [`reports/hardgate-stage3-100.txt`](reports/hardgate-stage3-100.txt)
 (100 vectors × 4 × u64 hash, SHA-256 of vector file + all tested RTL sources).
@@ -179,12 +179,53 @@ Utilization is ~11%, so roughly eight parallel cores would fit on the device.
   (share submission format, target format) must be aligned with whatever
   pool is used.
 
+## Two chains, one transport
+
+The pool this hardware is configured for serves **Bitcoin Knots BLAKE2b** work
+over the **Sia** dialect of Stratum v1. That is not a misconfiguration: this
+chain's stage-4 message *is* a standard 80-byte Sia work header, so a pool can
+hand Knots work to stock Sia mining firmware unchanged. Verified against our own
+node — `tagged_hash("Bitcoin prevblock header, hashed", previousblockhash)` with
+bytes 0..5 masked reproduces the pool's `mining.notify` prevhash byte for byte.
+
+So the transport is shared and only two things differ, both of which are easy to
+get wrong and invisible afterwards:
+
+| | Bitcoin Knots (`blake2b`) | Siacoin (`siacoin`) |
+|---|---|---|
+| Work item | 168 B — ss3 + ss4 + target | 88 B — header + target |
+| Stage 3 | on-chip, hashes the 52-byte arbitrary tx | none; the merkle root arrives folded |
+| Merkle branch | cannot be folded — jobs carrying one are refused | folded normally |
+| Compare value | digest **reversed** | digest **as emitted** |
+| Prefilter word | `H[3]` = `digest[24..31]` LE | `byteswap(H[0])` = `digest[0..7]` BE |
+| LUT / FF | 97,929 / 192,728 (11.2%) | 47,856 / 95,639 (5.5%) |
+
+A core built for one chain mining the other reports candidates at the normal
+rate and fails every one — the miner looks perfectly healthy and finds nothing.
+`zynq/check_sia_pairs.py` therefore grades the Sia core against `byteswap(H[0])`
+*and* carries a named detector for the `H[3]` form; fed the Knots values for the
+same nonces it fails and says which rule it saw, and fed nothing it fails rather
+than passing vacuously.
+
+### Stratum
+
+```bash
+# Decode tests: pure computation, no socket, no hardware.
+make host && ./blake2b_host --selftest stratum
+
+# End-to-end against a local reference pool. The production pool pins share
+# difficulty at 4096, where a software grind would take days, so correctness is
+# proven against a fixture that grades with an independent oracle.
+py -3 zynq/stratum_test_server.py --difficulty 0.001 --template-source synthetic     --accept-target 1 --timeout 200 &
+./blake2b_host --stratum 127.0.0.1:43101 --worker probe --stratum-probe
+```
+
 ## Contributing
 
 Open a GitHub issue on this repo for design questions, pin-LOC updates,
 Vivado synthesis reports, or Osprey CGI deployment traces. Pull requests
 welcome, especially: `build/synth.tcl`, real pin LOCs for the E100,
-Zynq-side UART/I²C bridge, and stratum client.
+Zynq-side UART/I²C bridge.
 
 ## License
 

@@ -1,0 +1,25 @@
+# Reproducible cross-toolchain for the Osprey miner binaries.
+#
+# FryStation has no C compiler at all, and the device is 32-bit ARM armhf running
+# Ubuntu 16.04 (glibc 2.23). The Makefile already targets arm-linux-gnueabihf with
+# -static for exactly that reason; this image just supplies that toolchain without
+# mutating the host.
+#
+#   docker build -t osprey-armhf-build:1 -f miner/Dockerfile.build miner/
+#   docker run --rm -v <repo>:/w -w /w/miner osprey-armhf-build:1 make
+#
+# gcc-arm-linux-gnueabihf brings the cross compiler; build-essential supplies the
+# native gcc the `host` target uses for offline validation.
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      gcc-arm-linux-gnueabihf \
+      libc6-dev-armhf-cross \
+      build-essential \
+      make \
+      file \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+CMD ["make"]

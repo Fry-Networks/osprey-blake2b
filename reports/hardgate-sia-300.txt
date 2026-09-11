@@ -1,0 +1,35 @@
+===== HARD GATE — OspreySiaCore, 300/300 prefilter pairs =====
+Testbench: tb/tb_sia_core.vhd   (free-run dump, MAX target)
+Grader:    zynq/check_sia_pairs.py   (independent oracle, hashlib only)
+GHDL:      GHDL 6.0.0 (6.0.0.r0.ge589c698c.dirty) [Dunoon edition]
+Cmd:       ghdl -r --std=08 --work=work --workdir=src/sia/ghdl-work tb_sia_core --stop-time=20ms
+           py -3 zynq/check_sia_pairs.py sia_pairs.txt
+
+pairs checked=300 matched=300 metavalue_lines=0 malformed=0
+SIA_PREFILTER: PASS - all 300 pairs match byteswap(H[0])
+
+===== GATE VALIDITY — the checker was proven to FAIL when it should =====
+RED 1 (same nonces, Knots byteswap(H[3]) values), exit 1:
+  pairs checked=300 matched=0 metavalue_lines=0 malformed=0
+  SIA_PREFILTER: FAIL - 300/300 pairs match the KNOTS rule byteswap(H[3]) instead of Siacoin's byteswap(H[0]). The core is tapping the wrong digest word; see the header comment in src/sia/OspreySiaCore.vhd.
+RED 2 (empty input), exit 1:
+  pairs checked=0 matched=0 metavalue_lines=0 malformed=0
+  SIA_PREFILTER: FAIL - zero pairs checked, nothing was graded
+
+===== tb_sia_unpack — 88-byte work item framing =====
+6 positive mappings + 4 negative (big-endian slot, target-from-low-end,
+reversed slot order, target aliasing slot 9): SIA_UNPACK: PASS
+
+===== RTL SHA256 (proves what was tested) =====
+  7b5aec496a902abb38c691e1d52156853d9f34516d6cbd0297de012b50aae18f *src/sia/PkgOspreySia.vhd
+  568b2bde5feb2df7859d8e79743cb629be2542573b2062b443ef776c354dde34 *src/sia/OspreySiaCore.vhd
+  772f74b3103178f3b54abe4fa5bd707d4c9e1b947e8af26c82acbbf70b347d98 *src/sia/OspreySiaTop.vhd
+  fb4891893ce7d2442bd638524fde8515a377ca2d9e08aed99b77f5ce28d1d988 *src/sia/OspreySiaUartTop.vhd
+  717cc6a8223a1c7d9a664b73a7abb3d12228b89e72cfdffc09a2202baf19989d *tb/tb_sia_core.vhd
+  6d9e8cf66b2fd2f5589d754b62759b9b62f9e10fb62b7bf03bc721a21e771578 *tb/tb_sia_unpack.vhd
+  372900e4140ca35a55fbbd95350b4b35155d1c3fc9fa8a4e014f7a04de8448c9 *zynq/check_sia_pairs.py
+  e6ed68a321edf1107afedf16fdfee9d2ff506bea1b57f57c809eba7928185f58 *vendor/sia-fpga/PkgBlake2b.vhd
+  09a589c61966a416330135c223ae73c16f087b7b69b3dd9f568a647a03cb49f8 *vendor/sia-fpga/MixG_FlopPipe_4.vhd
+  2db6c13f4ea2099b3ef6e296f13decc272720e03ee99684861e042dad92e95c1 *vendor/sia-fpga/QuadG.vhd
+  35310e5e9453c171a45be791b261e5a185321636e188ed5196fa8df7c0ffe94a *src/OspreyBlake2bUartGetWork.vhd
+  f6766b1b60218840848646a9387d96c1b67a7fe58c1fcb070cbd85ad2d2e9418 *src/clock_mgmt.vhd

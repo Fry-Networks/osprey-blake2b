@@ -34,6 +34,40 @@ int devfee_current_is_dev(void);
 uint64_t devfee_templates_total(void);
 uint64_t devfee_templates_dev(void);
 
+/* ---------------------------------------------------------------- pool mode
+ *
+ * Pool mining has no coinbase to redirect: the pool builds the block, and the
+ * miner only ever sees a header. So the fee cannot be taken by swapping an
+ * address the way devfee_next_payout() does. The equivalent is to spend one job
+ * in DEVFEE_INTERVAL mining for the developer's own pool account, on a separate
+ * stratum session.
+ *
+ * These counters are kept apart from the template counters above on purpose.
+ * The GBT path's numbers are asserted by selftest_block.c and must not move,
+ * and conflating "templates mined" with "pool jobs mined" would make both
+ * numbers mean nothing.
+ *
+ * When no dev pool is configured the epoch is still counted and then recorded
+ * as skipped, so status.json can report the difference between the fee that was
+ * scheduled and the fee that was actually taken. Reporting a fee as taken when
+ * it was not would be a lie told by a number, which is the hardest kind to
+ * notice.
+ */
+
+/* Advance the pool-job counter. Returns 1 if this job is a dev-fee job. */
+int devfee_pool_epoch(void);
+
+/* A dev-fee job that could not be honoured (no dev pool, or it was not ready). */
+void devfee_pool_skip(void);
+
+/* A share was actually submitted on the dev session. */
+void devfee_pool_credit(void);
+
+uint64_t devfee_pool_jobs(void);
+uint64_t devfee_pool_dev_jobs(void);
+uint64_t devfee_pool_skipped(void);
+uint64_t devfee_pool_shares(void);
+
 /* Test seam: reset the counter so selftests are order-independent. */
 void devfee_reset(void);
 
