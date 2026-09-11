@@ -1,9 +1,9 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 --------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version      : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date              : Wed Sep  9 03:41:22 2026
+| Date              : Fri Sep 11 10:55:38 2026
 | Host              : FryStation running 64-bit major release  (build 9200)
-| Command           : report_timing_summary -file C:/build/osprey-blake2b/reports/timing_summary.txt
+| Command           : report_timing_summary -file <repo>/reports/timing_summary.txt
 | Design            : OspreyBlake2bUartTop
 | Device            : xcvu35p-fsvh2104
 | Speed File        : -2  PRODUCTION 1.30 05-01-2022
@@ -139,7 +139,7 @@ Table of Contents
 
     WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
     -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
-      0.131        0.000                      0               195409        0.010        0.000                      0               195409        1.468        0.000                       0                193000  
+      0.453        0.000                      0               195409        0.010        0.000                      0               195409        1.468        0.000                       0                193000  
 
 
 All user specified timing constraints are met.
@@ -165,7 +165,7 @@ clk_p         {0.000 5.000}        10.000          100.000
 Clock             WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
 -----             -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
 clk_p                                                                                                                                                           2.000        0.000                       0                     1  
-  ClkOut0Raw        0.131        0.000                      0               195409        0.010        0.000                      0               195409        1.468        0.000                       0                192996  
+  ClkOut0Raw        0.453        0.000                      0               195409        0.010        0.000                      0               195409        1.468        0.000                       0                192996  
   FbOut                                                                                                                                                         8.710        0.000                       0                     3  
 
 
@@ -222,7 +222,7 @@ High Pulse Width  Slow    MMCME4_ADV/CLKIN1  n/a            3.000         5.000 
 From Clock:  ClkOut0Raw
   To Clock:  ClkOut0Raw
 
-Setup :            0  Failing Endpoints,  Worst Slack        0.131ns,  Total Violation        0.000ns
+Setup :            0  Failing Endpoints,  Worst Slack        0.453ns,  Total Violation        0.000ns
 Hold  :            0  Failing Endpoints,  Worst Slack        0.010ns,  Total Violation        0.000ns
 PW    :            0  Failing Endpoints,  Worst Slack        1.468ns,  Total Violation        0.000ns
 ---------------------------------------------------------------------------------------------------
@@ -230,26 +230,26 @@ PW    :            0  Failing Endpoints,  Worst Slack        1.468ns,  Total Vio
 
 Max Delay Paths
 --------------------------------------------------------------------------------------
-Slack (MET) :             0.131ns  (required time - arrival time)
-  Source:                 U_Uart/rxBitCount_reg[3]/C
+Slack (MET) :             0.453ns  (required time - arrival time)
+  Source:                 U_Uart/workDataLcl_reg[318]/C
                             (rising edge-triggered cell FDCE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
-  Destination:            U_Uart/workDataLcl_reg[35]/CE
-                            (rising edge-triggered cell FDCE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
+  Destination:            U_Core/U_Stage3/RoundGen[11].Mixer1/MixerGen[1].G/D0_reg[31]/D
+                            (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
   Path Group:             ClkOut0Raw
   Path Type:              Setup (Max at Slow Process Corner)
   Requirement:            4.000ns  (ClkOut0Raw rise@4.000ns - ClkOut0Raw rise@0.000ns)
-  Data Path Delay:        3.390ns  (logic 0.191ns (5.634%)  route 3.199ns (94.366%))
-  Logic Levels:           1  (LUT3=1)
-  Clock Path Skew:        -0.353ns (DCD - SCD + CPR)
-    Destination Clock Delay (DCD):    -0.141ns = ( 3.859 - 4.000 ) 
-    Source Clock Delay      (SCD):    0.102ns
-    Clock Pessimism Removal (CPR):    -0.110ns
+  Data Path Delay:        3.094ns  (logic 0.379ns (12.250%)  route 2.715ns (87.750%))
+  Logic Levels:           3  (CARRY8=1 LUT2=1 LUT4=1)
+  Clock Path Skew:        -0.413ns (DCD - SCD + CPR)
+    Destination Clock Delay (DCD):    -0.186ns = ( 3.814 - 4.000 ) 
+    Source Clock Delay      (SCD):    0.125ns
+    Clock Pessimism Removal (CPR):    -0.102ns
   Clock Uncertainty:      0.065ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
     Total System Jitter     (TSJ):    0.071ns
     Discrete Jitter          (DJ):    0.108ns
     Phase Error              (PE):    0.000ns
-  Clock Net Delay (Source):      2.090ns (routing 0.769ns, distribution 1.321ns)
-  Clock Net Delay (Destination): 1.667ns (routing 0.699ns, distribution 0.968ns)
+  Clock Net Delay (Source):      2.113ns (routing 0.769ns, distribution 1.344ns)
+  Clock Net Delay (Destination): 1.622ns (routing 0.699ns, distribution 0.923ns)
 
     Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
   -------------------------------------------------------------------    -------------------
@@ -268,16 +268,22 @@ Slack (MET) :             0.131ns  (required time - arrival time)
                          net (fo=1, routed)           0.245    -2.016    U_Clk/ClkOut0Raw
     BUFGCE_X0Y11         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
                                                       0.028    -1.988 r  U_Clk/U_ClkOutBufg/O
-    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      2.090     0.102    U_Uart/MiningClk
-    SLICE_X152Y148       FDCE                                         r  U_Uart/rxBitCount_reg[3]/C
+    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      2.113     0.125    U_Uart/MiningClk
+    SLICE_X33Y199        FDCE                                         r  U_Uart/workDataLcl_reg[318]/C
   -------------------------------------------------------------------    -------------------
-    SLICE_X152Y148       FDCE (Prop_GFF2_SLICEM_C_Q)
-                                                      0.079     0.181 f  U_Uart/rxBitCount_reg[3]/Q
-                         net (fo=6, routed)           0.104     0.285    U_Uart/rxBitCount_reg_n_0_[3]
-    SLICE_X152Y147       LUT3 (Prop_A5LUT_SLICEM_I0_O)
-                                                      0.112     0.397 r  U_Uart/workDataLcl[1343]_i_1/O
-                         net (fo=1292, routed)        3.095     3.492    U_Uart/workDataLcl[1343]_i_1_n_0
-    SLICE_X88Y66         FDCE                                         r  U_Uart/workDataLcl_reg[35]/CE
+    SLICE_X33Y199        FDCE (Prop_AFF2_SLICEL_C_Q)
+                                                      0.081     0.206 r  U_Uart/workDataLcl_reg[318]/Q
+                         net (fo=24, routed)          2.400     2.606    U_Core/U_Stage3/RoundGen[10].Mixer2/MixerGen[0].G/A2_reg[63]_0[62]
+    SLICE_X109Y165       LUT4 (Prop_G6LUT_SLICEM_I1_O)
+                                                      0.123     2.729 r  U_Core/U_Stage3/RoundGen[10].Mixer2/MixerGen[0].G/A0[63]_i_10__50/O
+                         net (fo=1, routed)           0.016     2.745    U_Core/U_Stage3/RoundGen[10].Mixer2/MixerGen[0].G/A0[63]_i_10__50_n_0
+    SLICE_X109Y165       CARRY8 (Prop_CARRY8_SLICEM_S[6]_O[7])
+                                                      0.085     2.830 r  U_Core/U_Stage3/RoundGen[10].Mixer2/MixerGen[0].G/A0_reg[63]_i_1__86/O[7]
+                         net (fo=2, routed)           0.241     3.070    U_Core/U_Stage3/RoundGen[10].Mixer2/MixerGen[0].G/O35[63]
+    SLICE_X109Y170       LUT2 (Prop_H6LUT_SLICEM_I0_O)
+                                                      0.090     3.160 r  U_Core/U_Stage3/RoundGen[10].Mixer2/MixerGen[0].G/D0[31]_i_1__86/O
+                         net (fo=1, routed)           0.058     3.218    U_Core/U_Stage3/RoundGen[11].Mixer1/MixerGen[1].G/D0_reg[63]_1[31]
+    SLICE_X109Y170       FDRE                                         r  U_Core/U_Stage3/RoundGen[11].Mixer1/MixerGen[1].G/D0_reg[31]/D
   -------------------------------------------------------------------    -------------------
 
                          (clock ClkOut0Raw rise edge)
@@ -295,17 +301,17 @@ Slack (MET) :             0.131ns  (required time - arrival time)
                          net (fo=1, routed)           0.216     2.168    U_Clk/ClkOut0Raw
     BUFGCE_X0Y11         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
                                                       0.024     2.192 r  U_Clk/U_ClkOutBufg/O
-    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      1.667     3.859    U_Uart/MiningClk
-    SLICE_X88Y66         FDCE                                         r  U_Uart/workDataLcl_reg[35]/C
-                         clock pessimism             -0.110     3.749    <hidden>
-                         clock uncertainty           -0.065     3.684    <hidden>
-    SLICE_X88Y66         FDCE (Setup_EFF_SLICEM_C_CE)
-                                                     -0.061     3.623    U_Uart/workDataLcl_reg[35]
+    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      1.622     3.814    U_Core/U_Stage3/RoundGen[11].Mixer1/MixerGen[1].G/MiningClk
+    SLICE_X109Y170       FDRE                                         r  U_Core/U_Stage3/RoundGen[11].Mixer1/MixerGen[1].G/D0_reg[31]/C
+                         clock pessimism             -0.102     3.711    <hidden>
+                         clock uncertainty           -0.065     3.647    <hidden>
+    SLICE_X109Y170       FDRE (Setup_HFF_SLICEM_C_D)
+                                                      0.025     3.672    U_Core/U_Stage3/RoundGen[11].Mixer1/MixerGen[1].G/D0_reg[31]
   -------------------------------------------------------------------
-                         required time                          3.623    <hidden>
-                         arrival time                          -3.492    <hidden>
+                         required time                          3.672    <hidden>
+                         arrival time                          -3.218    <hidden>
   -------------------------------------------------------------------
-                         slack                                  0.131    <hidden>
+                         slack                                  0.453    <hidden>
 
 
 
@@ -314,21 +320,21 @@ Slack (MET) :             0.131ns  (required time - arrival time)
 Min Delay Paths
 --------------------------------------------------------------------------------------
 Slack (MET) :             0.010ns  (arrival time - required time)
-  Source:                 U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C0_reg[7]/C
+  Source:                 U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C0_reg[30]/C
                             (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
-  Destination:            U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C1_reg[7]/D
+  Destination:            U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C1_reg[30]/D
                             (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
   Path Group:             ClkOut0Raw
   Path Type:              Hold (Min at Slow Process Corner)
   Requirement:            0.000ns  (ClkOut0Raw rise@0.000ns - ClkOut0Raw rise@0.000ns)
-  Data Path Delay:        0.175ns  (logic 0.058ns (33.143%)  route 0.117ns (66.857%))
+  Data Path Delay:        0.171ns  (logic 0.059ns (34.503%)  route 0.112ns (65.497%))
   Logic Levels:           0  
-  Clock Path Skew:        0.105ns (DCD - SCD - CPR)
-    Destination Clock Delay (DCD):    -0.040ns
-    Source Clock Delay      (SCD):    -0.093ns
-    Clock Pessimism Removal (CPR):    -0.052ns
-  Clock Net Delay (Source):      1.715ns (routing 0.699ns, distribution 1.016ns)
-  Clock Net Delay (Destination): 1.948ns (routing 0.769ns, distribution 1.179ns)
+  Clock Path Skew:        0.101ns (DCD - SCD - CPR)
+    Destination Clock Delay (DCD):    0.136ns
+    Source Clock Delay      (SCD):    0.074ns
+    Clock Pessimism Removal (CPR):    -0.040ns
+  Clock Net Delay (Source):      1.882ns (routing 0.699ns, distribution 1.183ns)
+  Clock Net Delay (Destination): 2.124ns (routing 0.769ns, distribution 1.355ns)
 
     Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
   -------------------------------------------------------------------    -------------------
@@ -347,13 +353,13 @@ Slack (MET) :             0.010ns  (arrival time - required time)
                          net (fo=1, routed)           0.216    -1.832    U_Clk/ClkOut0Raw
     BUFGCE_X0Y11         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
                                                       0.024    -1.808 r  U_Clk/U_ClkOutBufg/O
-    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      1.715    -0.093    U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/MiningClk
-    SLICE_X124Y98        FDRE                                         r  U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C0_reg[7]/C
+    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      1.882     0.074    U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/MiningClk
+    SLICE_X173Y119       FDRE                                         r  U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C0_reg[30]/C
   -------------------------------------------------------------------    -------------------
-    SLICE_X124Y98        FDRE (Prop_HFF_SLICEM_C_Q)
-                                                      0.058    -0.035 r  U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C0_reg[7]/Q
-                         net (fo=1, routed)           0.117     0.082    U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C0[7]
-    SLICE_X123Y99        FDRE                                         r  U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C1_reg[7]/D
+    SLICE_X173Y119       FDRE (Prop_GFF_SLICEL_C_Q)
+                                                      0.059     0.133 r  U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C0_reg[30]/Q
+                         net (fo=1, routed)           0.112     0.245    U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C0[30]
+    SLICE_X172Y117       FDRE                                         r  U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C1_reg[30]/D
   -------------------------------------------------------------------    -------------------
 
                          (clock ClkOut0Raw rise edge)
@@ -371,14 +377,14 @@ Slack (MET) :             0.010ns  (arrival time - required time)
                          net (fo=1, routed)           0.245    -2.016    U_Clk/ClkOut0Raw
     BUFGCE_X0Y11         BUFGCE (Prop_BUFCE_BUFGCE_I_O)
                                                       0.028    -1.988 r  U_Clk/U_ClkOutBufg/O
-    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      1.948    -0.040    U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/MiningClk
-    SLICE_X123Y99        FDRE                                         r  U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C1_reg[7]/C
-                         clock pessimism              0.052     0.012    <hidden>
-    SLICE_X123Y99        FDRE (Hold_GFF_SLICEL_C_D)
-                                                      0.060     0.072    U_Core/U_Stage4/RoundGen[9].Mixer2/MixerGen[1].G/C1_reg[7]
+    X3Y1 (CLOCK_ROOT)    net (fo=192994, routed)      2.124     0.136    U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/MiningClk
+    SLICE_X172Y117       FDRE                                         r  U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C1_reg[30]/C
+                         clock pessimism              0.040     0.175    <hidden>
+    SLICE_X172Y117       FDRE (Hold_GFF_SLICEL_C_D)
+                                                      0.060     0.235    U_Core/U_Stage4/RoundGen[6].Mixer2/MixerGen[0].G/C1_reg[30]
   -------------------------------------------------------------------
-                         required time                         -0.072    <hidden>
-                         arrival time                           0.082    <hidden>
+                         required time                         -0.235    <hidden>
+                         arrival time                           0.245    <hidden>
   -------------------------------------------------------------------
                          slack                                  0.010    <hidden>
 
@@ -393,10 +399,10 @@ Waveform(ns):       { 0.000 2.000 }
 Period(ns):         4.000
 Sources:            { U_Clk/U_Mmcm/CLKOUT0 }
 
-Check Type        Corner  Lib Pin     Reference Pin  Required(ns)  Actual(ns)  Slack(ns)  Location       Pin
-Min Period        n/a     BUFGCE/I    n/a            1.290         4.000       2.710      BUFGCE_X0Y11   U_Clk/U_ClkOutBufg/I
-Low Pulse Width   Slow    SRL16E/CLK  n/a            0.532         2.000       1.468      SLICE_X115Y53  U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A3_reg[0]_srl2/CLK
-High Pulse Width  Slow    SRL16E/CLK  n/a            0.532         2.000       1.468      SLICE_X115Y53  U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A3_reg[0]_srl2/CLK
+Check Type        Corner  Lib Pin     Reference Pin  Required(ns)  Actual(ns)  Slack(ns)  Location        Pin
+Min Period        n/a     BUFGCE/I    n/a            1.290         4.000       2.710      BUFGCE_X0Y11    U_Clk/U_ClkOutBufg/I
+Low Pulse Width   Slow    SRL16E/CLK  n/a            0.532         2.000       1.468      SLICE_X146Y154  U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A3_reg[0]_srl2/CLK
+High Pulse Width  Slow    SRL16E/CLK  n/a            0.532         2.000       1.468      SLICE_X146Y154  U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A3_reg[0]_srl2/CLK
 
 
 

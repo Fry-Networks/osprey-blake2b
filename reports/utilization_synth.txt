@@ -1,9 +1,9 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Wed Sep  9 03:00:30 2026
+| Date         : Fri Sep 11 10:21:56 2026
 | Host         : FryStation running 64-bit major release  (build 9200)
-| Command      : report_utilization -file C:/build/osprey-blake2b/reports/utilization_synth.txt
+| Command      : report_utilization -file <repo>/reports/utilization_synth.txt
 | Design       : OspreyBlake2bUartTop
 | Device       : xcvu35p-fsvh2104-2-e
 | Speed File   : -2

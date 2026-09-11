@@ -193,17 +193,44 @@ begin
 
   Hash0 <= kHin(3) xor A2_out_dly xor C2_out(kMixRounds-1)(1);
 
-  -- Byte-reverse to big-endian for Bitcoin-style compare.
+  -- Hash0_be is the byte-reverse of Hash0. It is REPORTED, never compared --
+  -- see the two separate roles below.
   Hash0_be <= Hash0( 7 downto  0) & Hash0(15 downto  8) & Hash0(23 downto 16) & Hash0(31 downto 24) &
               Hash0(39 downto 32) & Hash0(47 downto 40) & Hash0(55 downto 48) & Hash0(63 downto 56);
 
-  -- Compare top 64 bits vs shifted target's top word. This is a PREFILTER —
-  -- true final validation requires comparing all 256 bits AND applying the
-  -- XOR-key-mask + byte-reverse per stage 5 (done zynq-side).
+  -- COMPARE Hash0. REPORT Hash0_be. They are deliberately different values, and
+  -- this block exists so nobody "fixes" that back.
+  --
+  -- The comparison used to be against Hash0_be, and that was wrong. BLAKE2b
+  -- serialises h[3] LITTLE-endian into digest[24..31], and Bitcoin's compare
+  -- value is the whole digest reversed (final[31-i] = hash_b[i]) -- so its top
+  -- eight bytes are hash_b[31..24], and reading those most-significant-first is
+  -- h[3] itself. Hash0 IS the compare value's top 64 bits, already, in the same
+  -- units as TargetTop64 (which the host builds as the top 64 bits of the
+  -- big-endian 256-bit target). Byte-reversing it first compared a permuted
+  -- value against an unpermuted target: the filter then passed on
+  -- digest[24..25] while a real solution needs digest[31..30]. Those are
+  -- independent, so at any real target it essentially never surfaced one --
+  -- which is what blocks_submitted = 0 had been reporting for months.
+  --
+  -- Sia is the opposite case and its core is correct as written: Siacoin
+  -- compares the digest AS EMITTED, so its top 64 bits are digest[0..7]
+  -- big-endian = byteswap(h[0]), and OspreySiaCore must keep its byte-reverse.
+  -- Same pipeline, opposite convention. Do not unify them.
+  --
+  -- HashTop64Out keeps carrying Hash0_be because that word has a different job:
+  -- it is the host's frame-integrity check. miner.c's expected_hash_top64() and
+  -- sia_stratum.c's sia_expected_top64() both recompute byteswap(h[3]) and
+  -- require equality, which proves the part computed the digest correctly. It
+  -- is never compared against a target on either side, so changing it would
+  -- break three equality checks and zynq/check_stage4_pairs.py for no gain.
+  --
+  -- Still a PREFILTER: true validation needs all 256 bits plus the stage-5
+  -- XOR-key-mask, and that happens zynq-side.
   Verify: process(Clk)
   begin
     if rising_edge(Clk) then
-      if Hash0_be < TargetTop64 then
+      if Hash0 < TargetTop64 then
         Success      <= '1';
         NonceOut     <= Nonce(0) - (kPipeLength + 1); -- account for pipeline latency
         HashTop64Out <= Hash0_be;

@@ -1,9 +1,9 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Wed Sep  9 03:39:43 2026
+| Date         : Fri Sep 11 10:54:16 2026
 | Host         : FryStation running 64-bit major release  (build 9200)
-| Command      : report_utilization -file C:/build/osprey-blake2b/reports/utilization.txt
+| Command      : report_utilization -file <repo>/reports/utilization.txt
 | Design       : OspreyBlake2bUartTop
 | Device       : xcvu35p-fsvh2104-2-e
 | Speed File   : -2
@@ -37,8 +37,8 @@ Table of Contents
 +----------------------------+--------+-------+------------+-----------+-------+
 |          Site Type         |  Used  | Fixed | Prohibited | Available | Util% |
 +----------------------------+--------+-------+------------+-----------+-------+
-| CLB LUTs                   |  97929 |     0 |          0 |    871680 | 11.23 |
-|   LUT as Logic             |  97791 |     0 |          0 |    871680 | 11.22 |
+| CLB LUTs                   |  97989 |     0 |          0 |    871680 | 11.24 |
+|   LUT as Logic             |  97851 |     0 |          0 |    871680 | 11.23 |
 |   LUT as Memory            |    138 |     0 |          0 |    403200 |  0.03 |
 |     LUT as Distributed RAM |      0 |     0 |            |           |       |
 |     LUT as Shift Register  |    138 |     0 |            |           |       |
@@ -49,7 +49,7 @@ Table of Contents
 | F7 Muxes                   |      0 |     0 |          0 |    435840 |  0.00 |
 | F8 Muxes                   |      0 |     0 |          0 |    217920 |  0.00 |
 | F9 Muxes                   |      0 |     0 |          0 |    108960 |  0.00 |
-| Unique Control Sets        |     11 |       |          0 |    217920 | <0.01 |
+| Unique Control Sets        |     12 |       |          0 |    217920 | <0.01 |
 +----------------------------+--------+-------+------------+-----------+-------+
 * Warning! LUT value is adjusted to account for LUT combining.
 ** Note: Available Control Sets calculated as Slices * 2, Review the Control Sets Report for more information regarding control sets.
@@ -80,13 +80,13 @@ Table of Contents
 +--------------------------------------------+--------+-------+------------+-----------+-------+
 |                  Site Type                 |  Used  | Fixed | Prohibited | Available | Util% |
 +--------------------------------------------+--------+-------+------------+-----------+-------+
-| CLB                                        |  18946 |     0 |          0 |    108960 | 17.39 |
-|   CLBL                                     |   9961 |     0 |            |           |       |
-|   CLBM                                     |   8985 |     0 |            |           |       |
-| LUT as Logic                               |  97791 |     0 |          0 |    871680 | 11.22 |
+| CLB                                        |  19135 |     0 |          0 |    108960 | 17.56 |
+|   CLBL                                     |  10368 |     0 |            |           |       |
+|   CLBM                                     |   8767 |     0 |            |           |       |
+| LUT as Logic                               |  97851 |     0 |          0 |    871680 | 11.23 |
 |   using O5 output only                     |      6 |       |            |           |       |
-|   using O6 output only                     |  75945 |       |            |           |       |
-|   using O5 and O6                          |  21840 |       |            |           |       |
+|   using O6 output only                     |  76065 |       |            |           |       |
+|   using O5 and O6                          |  21780 |       |            |           |       |
 | LUT as Memory                              |    138 |     0 |          0 |    403200 |  0.03 |
 |   LUT as Distributed RAM                   |      0 |     0 |            |           |       |
 |     using O5 output only                   |      0 |       |            |           |       |
@@ -97,10 +97,10 @@ Table of Contents
 |     using O6 output only                   |     10 |       |            |           |       |
 |     using O5 and O6                        |    128 |       |            |           |       |
 | CLB Registers                              | 192728 |     0 |          0 |   1743360 | 11.05 |
-|   Register driven from within the CLB      |  86566 |       |            |           |       |
-|   Register driven from outside the CLB     | 106162 |       |            |           |       |
-|     LUT in front of the register is unused |  82765 |       |            |           |       |
-|     LUT in front of the register is used   |  23397 |       |            |           |       |
+|   Register driven from within the CLB      |  86829 |       |            |           |       |
+|   Register driven from outside the CLB     | 105899 |       |            |           |       |
+|     LUT in front of the register is unused |  84916 |       |            |           |       |
+|     LUT in front of the register is used   |  20983 |       |            |           |       |
 +--------------------------------------------+--------+-------+------------+-----------+-------+
 
 
@@ -160,7 +160,7 @@ Table of Contents
 +------------+------+-------+------------+-----------+-------+
 |  Site Type | Used | Fixed | Prohibited | Available | Util% |
 +------------+------+-------+------------+-----------+-------+
-| BUFGCE     |    3 |     0 |          0 |       192 |  1.56 |
+| BUFGCE     |    4 |     0 |          0 |       192 |  2.08 |
 | BUFGCE_DIV |    0 |     0 |          0 |        32 |  0.00 |
 | BUFG_GT    |    0 |     0 |          0 |       384 |  0.00 |
 | BUFGCTRL*  |    0 |     0 |          0 |        64 |  0.00 |
@@ -226,7 +226,7 @@ Table of Contents
 | LUT5       |     14 |                 CLB |
 | FDPE       |     14 |            Register |
 | SRLC32E    |     10 |                 CLB |
-| BUFGCE     |      3 |               Clock |
+| BUFGCE     |      4 |               Clock |
 | IBUFCTRL   |      2 |                 I/O |
 | OBUF       |      1 |                 I/O |
 | MMCME4_ADV |      1 |               Clock |
@@ -288,14 +288,14 @@ Table of Contents
 +----------------------------+--------+------+--------+--------+
 |          Site Type         |  SLR0  | SLR1 | SLR0 % | SLR1 % |
 +----------------------------+--------+------+--------+--------+
-| CLB                        |  18946 |    0 |  34.47 |   0.00 |
-|   CLBL                     |   9961 |    0 |  34.02 |   0.00 |
-|   CLBM                     |   8985 |    0 |  34.99 |   0.00 |
-| CLB LUTs                   |  97929 |    0 |  22.27 |   0.00 |
-|   LUT as Logic             |  97791 |    0 |  22.24 |   0.00 |
+| CLB                        |  19135 |    0 |  34.82 |   0.00 |
+|   CLBL                     |  10368 |    0 |  35.41 |   0.00 |
+|   CLBM                     |   8767 |    0 |  34.14 |   0.00 |
+| CLB LUTs                   |  97989 |    0 |  22.29 |   0.00 |
+|   LUT as Logic             |  97851 |    0 |  22.26 |   0.00 |
 |     using O5 output only   |      6 |    0 |  <0.01 |   0.00 |
-|     using O6 output only   |  75945 |    0 |  17.27 |   0.00 |
-|     using O5 and O6        |  21840 |    0 |   4.97 |   0.00 |
+|     using O6 output only   |  76065 |    0 |  17.30 |   0.00 |
+|     using O5 and O6        |  21780 |    0 |   4.95 |   0.00 |
 |   LUT as Memory            |    138 |    0 |   0.07 |   0.00 |
 |     LUT as Distributed RAM |      0 |    0 |   0.00 |   0.00 |
 |     LUT as Shift Register  |    138 |    0 |   0.07 |   0.00 |
@@ -311,7 +311,7 @@ Table of Contents
 |   RAMB18                   |      0 |    0 |   0.00 |   0.00 |
 | URAM                       |      0 |    0 |   0.00 |   0.00 |
 | DSPs                       |      0 |    0 |   0.00 |   0.00 |
-| Unique Control Sets        |     11 |    0 |   0.01 |   0.00 |
+| Unique Control Sets        |     12 |    0 |   0.01 |   0.00 |
 +----------------------------+--------+------+--------+--------+
 * Note: Available Control Sets based on CLB Registers / 8
 

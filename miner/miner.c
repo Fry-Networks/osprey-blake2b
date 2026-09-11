@@ -7,11 +7,14 @@
  * Observability is HTTP-only — there is no SSH to this box. Everything of
  * interest lands in /var/www/html/blake2b/status.json.
  *
- * The prefilter reports byte-reversed digest word H[3], which is the word
- * Bitcoin's target convention needs: the reference reverses the digest, so the
- * compare value's most significant 8 bytes are digest[31..24]. An earlier
- * bitstream inherited Sia's H[0] tap, whose candidates were uncorrelated with
- * the target, and was rebuilt.
+ * The prefilter COMPARES digest word H[3] as-is and REPORTS it byte-reversed.
+ * Those are two different values with two different jobs: Bitcoin's compare
+ * value is the digest reversed, so its most significant 8 bytes are
+ * digest[31..24] read most-significant-first, which is H[3] unswapped; the
+ * reported word is only the frame-integrity check expected_hash_top64() below
+ * reproduces. An earlier bitstream inherited Sia's H[0] tap, and a later one
+ * compared the byte-reversed word against an unreversed target -- both made
+ * candidates uncorrelated with the target, and both were rebuilt.
  */
 #define _GNU_SOURCE
 #include "uio_uart.h"
@@ -593,16 +596,23 @@ static int get_template(knots_header_t *h)
 /* Verification                                                        */
 /* ------------------------------------------------------------------ */
 
-/* The RTL prefilter reports byte-reversed digest word H[3], i.e. hash_b[24..31]
- * read big-endian. See OspreyBlake2bStage4Core.vhd Hash0/Hash0_be.
+/* The RTL REPORTS byte-reversed digest word H[3], i.e. hash_b[24..31] read
+ * big-endian, and this reproduces it. Equality here proves the part computed
+ * the digest correctly -- it is a frame-integrity check, nothing more.
  *
- * This read hb[0..7] -- H[0] -- to match the old RTL, which had inherited Sia's
- * tap. Both sides were wrong in the same direction, so they agreed with each
- * other and disagreed with Bitcoin. Fixing only the RTL would have left every
- * candidate failing verification here, which looks exactly like a broken
- * datapath. Bitcoin's compare value is the digest reversed
- * (final[31-i] = hash_b[i]), so its top 8 bytes are hash_b[31..24], which is
- * H[3] byteswapped. */
+ * It is NOT the value the FPGA compares against the target, and this comment
+ * used to claim it was. Bitcoin's compare value is the digest reversed
+ * (final[31-i] = hash_b[i]), so its top 8 bytes are hash_b[31..24] read
+ * most-significant-first -- and because BLAKE2b serialises h[3] LITTLE-endian
+ * into hash_b[24..31], that is H[3] UNSWAPPED, not byteswapped. Getting that
+ * backwards is what made the RTL compare a permuted value against an
+ * unpermuted target; see the Verify block in OspreyBlake2bStage4Core.vhd, which
+ * now compares Hash0 while still reporting Hash0_be.
+ *
+ * So the two words differ on purpose, and this function must keep matching the
+ * REPORTED one. An earlier bitstream additionally tapped H[0] -- Sia's word --
+ * and this function matched it, so both sides were wrong together and agreed
+ * with each other; that tap was fixed separately. */
 static uint64_t expected_hash_top64(const knots_header_t *h)
 {
     uint8_t ss3[STAGE3_LEN], ss4[STAGE4_LEN], ha[32], hb[32];

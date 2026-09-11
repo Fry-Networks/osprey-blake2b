@@ -52,6 +52,7 @@ iter_*_CongestedCLBsAndNets.txt
 
 # GHDL simulation output
 stage4_pairs.txt
+stage4_compare_pairs.txt
 
 # Publish-audit output. It is a run artifact, not source, and its key names have
 # embedded the operator's handle before now.

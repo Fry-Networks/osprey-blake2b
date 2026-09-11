@@ -1,0 +1,50 @@
+===== HARD GATE — Stage4 prefilter COMPARISON operand =====
+Testbench: tb/tb_stage4_compare.vhd   (real target 0x0FFFFFFFFFFFFFFF, P=1/16, 4000 cycles)
+Grader:    zynq/check_stage4_compare.py   (independent oracle, hashlib only)
+GHDL:      GHDL 6.0.0 (6.0.0.r0.ge589c698c.dirty) [Dunoon edition]
+
+Why this gate exists: tb/tb_stage4_prefilter.vhd drives TargetTop64 = MAX, under
+which 'Hash0 < MAX' and 'Hash0_be < MAX' are both always true -- so the comparison
+operand is unobserved by every pre-existing bench. It was untested in BOTH
+directions, which is how a core comparing the byte-reversed word against an
+unreversed target reached silicon.
+
+===== GATE VALIDITY - proven to FAIL before it was trusted to PASS =====
+RED 1 (pre-fix RTL, 'if Hash0_be < TargetTop64'), exit 1:
+  target=0fffffffffffffff cycles=4000 emitted=249 satisfy_Hash0=9 satisfy_Hash0_be_only=240 malformed=0
+  STAGE4_COMPARE: FAIL - 240/249 emitted pairs satisfy the BYTE-REVERSED rule (Hash0_be < target) instead of Hash0 < target. The Verify process is comparing the reported word rather than the compare value; see the Verify block in src/OspreyBlake2bStage4Core.vhd.
+RED 2 (empty input), exit 1:
+  target=None cycles=None emitted=0 satisfy_Hash0=0 satisfy_Hash0_be_only=0 malformed=0
+  STAGE4_COMPARE: FAIL - zero pairs checked, nothing was graded
+
+===== RESULT - fixed RTL ('if Hash0 < TargetTop64'), exit 0 =====
+  target=0fffffffffffffff cycles=4000 emitted=243 satisfy_Hash0=243 satisfy_Hash0_be_only=0 malformed=0
+          hit rate 0.060750 against P(target)=0.062500
+  STAGE4_COMPARE: PASS - all 243 emitted pairs satisfy Hash0 < target
+
+  The hit rate matching P(target) is the independent confirmation: pre-fix the core
+  emitted at the same RATE but on an uncorrelated word.
+
+===== ON-DEVICE, pre-fix bitstream, solo GBT at --target-shift 40 =====
+  target_top64 = 0x000003c2d4000000 (read from boot.log, not recomputed)
+  0/14 sampled candidates satisfied byteswap(reported) < target
+  -> NOT CORRELATED. Post-fix this must be 100%.
+
+===== UNCHANGED existing gates (they grade the REPORTED word, not the comparison) =====
+  tb_stage3_core       RESULT: 100/100 PASS
+  tb_unpack            UNPACK: PASS
+  tb_stage4_smoke      SMOKE: PASS (297/300)
+  tb_stage4_prefilter  + check_stage4_pairs.py: PASS - all 299 pairs match byteswap(H[3])
+  tb_sia_unpack        SIA_UNPACK: PASS
+  tb_sia_core          + check_sia_pairs.py: PASS - all 300 pairs match byteswap(H[0])
+
+===== RTL SHA256 (proves what was tested) =====
+  630b9404585869e83259abb347332e549cafdc87c7d7525b22cc765704d726ec *src/OspreyBlake2bStage4Core.vhd
+  2ae5f4ac5cffef711bb3e2cbfbf34e7a4985f489685d405d6a28617747c8a52b *src/OspreyBlake2bStage3Core.vhd
+  915a1db501365fa10f6489124f05f7f1d9ab680fb3ce64ff66a6d03d1e7f9a6d *src/OspreyBlake2bTop.vhd
+  6e177cfb1aeaacaad20ce85d7f0f4e29369e077fc5b44a59853463dbcf0f83f2 *src/PkgOspreyBlake2b.vhd
+  07af5cbcf73e462ccc152783c973db4e8b807c72bfb7035c0b10b6e6053ba7f4 *tb/tb_stage4_compare.vhd
+  2cb3f8db79a18d234f838665072026f6dde9d8b4e09af5ad12ff67c699b6ce51 *zynq/check_stage4_compare.py
+  e6ed68a321edf1107afedf16fdfee9d2ff506bea1b57f57c809eba7928185f58 *vendor/sia-fpga/PkgBlake2b.vhd
+  09a589c61966a416330135c223ae73c16f087b7b69b3dd9f568a647a03cb49f8 *vendor/sia-fpga/MixG_FlopPipe_4.vhd
+  2db6c13f4ea2099b3ef6e296f13decc272720e03ee99684861e042dad92e95c1 *vendor/sia-fpga/QuadG.vhd
