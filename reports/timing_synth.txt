@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 --------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version      : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date              : Fri Sep 11 10:23:20 2026
+| Date              : Sat Sep 12 00:11:56 2026
 | Host              : FryStation running 64-bit major release  (build 9200)
 | Command           : report_timing_summary -file <repo>/reports/timing_synth.txt
 | Design            : OspreyBlake2bUartTop
@@ -139,7 +139,7 @@ Table of Contents
 
     WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
     -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
-      2.184        0.000                      0               195409       -0.091    -8779.159                 149770               195409        1.468        0.000                       0                193000  
+      2.055        0.000                      0               775430       -0.081   -34884.348                 594263               775430        1.975        0.000                       0                765620  
 
 
 Timing constraints are not met.
@@ -153,7 +153,7 @@ Timing constraints are not met.
 Clock         Waveform(ns)         Period(ns)      Frequency(MHz)
 -----         ------------         ----------      --------------
 clk_p         {0.000 5.000}        10.000          100.000         
-  ClkOut0Raw  {0.000 2.000}        4.000           250.000         
+  ClkOut0Raw  {0.000 2.250}        4.500           222.222         
   FbOut       {0.000 5.000}        10.000          100.000         
 
 
@@ -165,7 +165,7 @@ clk_p         {0.000 5.000}        10.000          100.000
 Clock             WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
 -----             -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
 clk_p                                                                                                                                                           2.000        0.000                       0                     1  
-  ClkOut0Raw        2.184        0.000                      0               195409       -0.091    -8779.159                 149770               195409        1.468        0.000                       0                192996  
+  ClkOut0Raw        2.055        0.000                      0               775430       -0.081   -34884.348                 594263               775430        1.975        0.000                       0                765616  
   FbOut                                                                                                                                                         8.710        0.000                       0                     3  
 
 
@@ -222,31 +222,31 @@ High Pulse Width  Slow    MMCME4_ADV/CLKIN1  n/a            3.000         5.000 
 From Clock:  ClkOut0Raw
   To Clock:  ClkOut0Raw
 
-Setup :            0  Failing Endpoints,  Worst Slack        2.184ns,  Total Violation        0.000ns
-Hold  :       149770  Failing Endpoints,  Worst Slack       -0.091ns,  Total Violation    -8779.160ns
-PW    :            0  Failing Endpoints,  Worst Slack        1.468ns,  Total Violation        0.000ns
+Setup :            0  Failing Endpoints,  Worst Slack        2.055ns,  Total Violation        0.000ns
+Hold  :       594263  Failing Endpoints,  Worst Slack       -0.081ns,  Total Violation   -34884.346ns
+PW    :            0  Failing Endpoints,  Worst Slack        1.975ns,  Total Violation        0.000ns
 ---------------------------------------------------------------------------------------------------
 
 
 Max Delay Paths
 --------------------------------------------------------------------------------------
-Slack (MET) :             2.184ns  (required time - arrival time)
-  Source:                 U_Core/U_Stage3/A2_out_dly_reg[2][2]/C
-                            (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
-  Destination:            U_Core/U_Stage4/RoundGen[0].Mixer2/MixerGen[0].G/D0_reg[28]/D
-                            (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
+Slack (MET) :             2.055ns  (required time - arrival time)
+  Source:                 U_Arb/Vld_reg[1]/C
+                            (rising edge-triggered cell FDCE clocked by ClkOut0Raw  {rise@0.000ns fall@2.250ns period=4.500ns})
+  Destination:            U_Arb/Hash_reg[0][0]/CE
+                            (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.250ns period=4.500ns})
   Path Group:             ClkOut0Raw
   Path Type:              Setup (Max at Slow Process Corner)
-  Requirement:            4.000ns  (ClkOut0Raw rise@4.000ns - ClkOut0Raw rise@0.000ns)
-  Data Path Delay:        1.631ns  (logic 0.617ns (37.830%)  route 1.014ns (62.170%))
-  Logic Levels:           12  (CARRY8=8 LUT2=2 LUT3=1 LUT4=1)
+  Requirement:            4.500ns  (ClkOut0Raw rise@4.500ns - ClkOut0Raw rise@0.000ns)
+  Data Path Delay:        2.173ns  (logic 0.549ns (25.265%)  route 1.624ns (74.735%))
+  Logic Levels:           7  (LUT2=1 LUT4=1 LUT5=1 LUT6=4)
   Clock Path Skew:        -0.145ns (DCD - SCD + CPR)
-    Destination Clock Delay (DCD):    -0.438ns = ( 3.562 - 4.000 ) 
+    Destination Clock Delay (DCD):    -0.438ns = ( 4.062 - 4.500 ) 
     Source Clock Delay      (SCD):    -0.166ns
     Clock Pessimism Removal (CPR):    0.127ns
-  Clock Uncertainty:      0.065ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
+  Clock Uncertainty:      0.066ns  ((TSJ^2 + DJ^2)^1/2) / 2 + PE
     Total System Jitter     (TSJ):    0.071ns
-    Discrete Jitter          (DJ):    0.108ns
+    Discrete Jitter          (DJ):    0.111ns
     Phase Error              (PE):    0.000ns
 
     Location             Delay type                Incr(ns)  Path(ns)    Netlist Resource(s)
@@ -265,70 +265,52 @@ Slack (MET) :             2.184ns  (required time - arrival time)
                                                      -4.093    -2.976 r  U_Clk/U_Mmcm/CLKOUT0
                          net (fo=1, unplaced)         0.198    -2.778    U_Clk/ClkOut0Raw
                          BUFGCE (Prop_BUFGCE_I_O)     0.028    -2.750 r  U_Clk/U_ClkOutBufg/O
-                         net (fo=192994, unplaced)    2.584    -0.166    U_Core/U_Stage3/MiningClk
-                         FDRE                                         r  U_Core/U_Stage3/A2_out_dly_reg[2][2]/C
+                         net (fo=765614, unplaced)    2.584    -0.166    U_Arb/MiningClk
+                         FDCE                                         r  U_Arb/Vld_reg[1]/C
   -------------------------------------------------------------------    -------------------
-                         FDRE (Prop_FDRE_C_Q)         0.077    -0.089 r  U_Core/U_Stage3/A2_out_dly_reg[2][2]/Q
-                         net (fo=1, unplaced)         0.137     0.048    U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A0[7]_i_14__55
-                         LUT2 (Prop_LUT2_I1_O)        0.038     0.086 r  U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A0[7]_i_21/O
-                         net (fo=25, unplaced)        0.239     0.325    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/HashA[2]_37[2]
-                         LUT3 (Prop_LUT3_I1_O)        0.038     0.363 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0[7]_i_6__91/O
-                         net (fo=2, unplaced)         0.185     0.548    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0[7]_i_6__91_n_0
-                         LUT4 (Prop_LUT4_I3_O)        0.038     0.586 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0[7]_i_13__55/O
-                         net (fo=1, unplaced)         0.187     0.773    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0[7]_i_13__55_n_0
-                         CARRY8 (Prop_CARRY8_S[3]_CO[7])
-                                                      0.170     0.943 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[7]_i_1__93/CO[7]
-                         net (fo=1, unplaced)         0.005     0.948    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[7]_i_1__93_n_0
-                         CARRY8 (Prop_CARRY8_CI_CO[7])
-                                                      0.022     0.970 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[15]_i_1__93/CO[7]
-                         net (fo=1, unplaced)         0.005     0.975    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[15]_i_1__93_n_0
-                         CARRY8 (Prop_CARRY8_CI_CO[7])
-                                                      0.022     0.997 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[23]_i_1__95/CO[7]
-                         net (fo=1, unplaced)         0.005     1.002    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[23]_i_1__95_n_0
-                         CARRY8 (Prop_CARRY8_CI_CO[7])
-                                                      0.022     1.024 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[31]_i_1__93/CO[7]
-                         net (fo=1, unplaced)         0.005     1.029    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[31]_i_1__93_n_0
-                         CARRY8 (Prop_CARRY8_CI_CO[7])
-                                                      0.022     1.051 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[39]_i_1__93/CO[7]
-                         net (fo=1, unplaced)         0.005     1.056    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[39]_i_1__93_n_0
-                         CARRY8 (Prop_CARRY8_CI_CO[7])
-                                                      0.022     1.078 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[47]_i_1__93/CO[7]
-                         net (fo=1, unplaced)         0.005     1.083    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[47]_i_1__93_n_0
-                         CARRY8 (Prop_CARRY8_CI_CO[7])
-                                                      0.022     1.105 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[55]_i_1__91/CO[7]
-                         net (fo=1, unplaced)         0.005     1.110    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[55]_i_1__91_n_0
-                         CARRY8 (Prop_CARRY8_CI_O[4])
-                                                      0.086     1.196 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/A0_reg[63]_i_1__95/O[4]
-                         net (fo=2, unplaced)         0.183     1.379    U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/O31[60]
-                         LUT2 (Prop_LUT2_I0_O)        0.038     1.417 r  U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[1].G/D0[28]_i_1__97/O
-                         net (fo=1, unplaced)         0.048     1.465    U_Core/U_Stage4/RoundGen[0].Mixer2/MixerGen[0].G/D0_reg[63]_1[28]
-                         FDRE                                         r  U_Core/U_Stage4/RoundGen[0].Mixer2/MixerGen[0].G/D0_reg[28]/D
+                         FDCE (Prop_FDCE_C_Q)         0.077    -0.089 r  U_Arb/Vld_reg[1]/Q
+                         net (fo=6, unplaced)         0.176     0.087    U_Arb/p_0_in_0
+                         LUT6 (Prop_LUT6_I0_O)        0.150     0.237 r  U_Arb/resultLcl[135]_i_10/O
+                         net (fo=7, unplaced)         0.210     0.447    U_Arb/resultLcl[135]_i_10_n_0
+                         LUT4 (Prop_LUT4_I3_O)        0.070     0.517 r  U_Arb/txByteCount[30]_i_8/O
+                         net (fo=5, unplaced)         0.159     0.676    U_Arb/txByteCount[30]_i_8_n_0
+                         LUT6 (Prop_LUT6_I2_O)        0.100     0.776 r  U_Arb/Vld[7]_i_15/O
+                         net (fo=2, unplaced)         0.185     0.961    U_Arb/Vld[7]_i_15_n_0
+                         LUT5 (Prop_LUT5_I3_O)        0.038     0.999 r  U_Arb/Vld[7]_i_7/O
+                         net (fo=1, unplaced)         0.185     1.184    U_Arb/Vld[7]_i_7_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     1.222 f  U_Arb/Vld[7]_i_2/O
+                         net (fo=275, unplaced)       0.293     1.515    U_Arb/Vld[7]_i_2_n_0
+                         LUT6 (Prop_LUT6_I2_O)        0.038     1.553 r  U_Arb/Nonce[0][63]_i_2/O
+                         net (fo=1, unplaced)         0.185     1.738    U_Arb/Nonce_reg[0]1
+                         LUT2 (Prop_LUT2_I0_O)        0.038     1.776 r  U_Arb/Nonce[0][63]_i_1/O
+                         net (fo=128, unplaced)       0.231     2.007    U_Arb/Nonce[0][63]_i_1_n_0
+                         FDRE                                         r  U_Arb/Hash_reg[0][0]/CE
   -------------------------------------------------------------------    -------------------
 
                          (clock ClkOut0Raw rise edge)
-                                                      4.000     4.000 r  <hidden>
-    BB18                                              0.000     4.000 r  clk_p
-                         net (fo=0)                   0.000     4.000    U_ClkBuf/I
+                                                      4.500     4.500 r  <hidden>
+    BB18                                              0.000     4.500 r  clk_p
+                         net (fo=0)                   0.000     4.500    U_ClkBuf/I
     HPIOBDIFFINBUF_X0Y10 DIFFINBUF (Prop_DIFFINBUF_HPIOBDIFFINBUF_DIFF_IN_P_O)
-                                                      0.610     4.610 r  U_ClkBuf/DIFFINBUF_INST/O
-                         net (fo=1, estimated)        0.040     4.650    U_ClkBuf/OUT
+                                                      0.610     5.110 r  U_ClkBuf/DIFFINBUF_INST/O
+                         net (fo=1, estimated)        0.040     5.150    U_ClkBuf/OUT
     BB18                 IBUFCTRL (Prop_IBUFCTRL_HPIOB_M_I_O)
-                                                      0.000     4.650 r  U_ClkBuf/IBUFCTRL_INST/O
-                         net (fo=1, unplaced)         0.312     4.962    U_Clk/ClkIn
+                                                      0.000     5.150 r  U_ClkBuf/IBUFCTRL_INST/O
+                         net (fo=1, unplaced)         0.312     5.462    U_Clk/ClkIn
                          MMCME4_ADV (Prop_MMCME4_ADV_CLKIN1_CLKOUT0)
-                                                     -4.039     0.923 r  U_Clk/U_Mmcm/CLKOUT0
-                         net (fo=1, unplaced)         0.176     1.099    U_Clk/ClkOut0Raw
-                         BUFGCE (Prop_BUFGCE_I_O)     0.024     1.123 r  U_Clk/U_ClkOutBufg/O
-                         net (fo=192994, unplaced)    2.439     3.562    U_Core/U_Stage4/RoundGen[0].Mixer2/MixerGen[0].G/MiningClk
-                         FDRE                                         r  U_Core/U_Stage4/RoundGen[0].Mixer2/MixerGen[0].G/D0_reg[28]/C
-                         clock pessimism              0.127     3.689    <hidden>
-                         clock uncertainty           -0.065     3.624    <hidden>
-                         FDRE (Setup_FDRE_C_D)        0.025     3.649    U_Core/U_Stage4/RoundGen[0].Mixer2/MixerGen[0].G/D0_reg[28]
+                                                     -4.039     1.423 r  U_Clk/U_Mmcm/CLKOUT0
+                         net (fo=1, unplaced)         0.176     1.599    U_Clk/ClkOut0Raw
+                         BUFGCE (Prop_BUFGCE_I_O)     0.024     1.623 r  U_Clk/U_ClkOutBufg/O
+                         net (fo=765614, unplaced)    2.439     4.062    U_Arb/MiningClk
+                         FDRE                                         r  U_Arb/Hash_reg[0][0]/C
+                         clock pessimism              0.127     4.189    <hidden>
+                         clock uncertainty           -0.066     4.123    <hidden>
+                         FDRE (Setup_FDRE_C_CE)      -0.061     4.062    U_Arb/Hash_reg[0][0]
   -------------------------------------------------------------------
-                         required time                          3.649    <hidden>
-                         arrival time                          -1.465    <hidden>
+                         required time                          4.062    <hidden>
+                         arrival time                          -2.007    <hidden>
   -------------------------------------------------------------------
-                         slack                                  2.184    <hidden>
+                         slack                                  2.055    <hidden>
 
 
 
@@ -336,16 +318,16 @@ Slack (MET) :             2.184ns  (required time - arrival time)
 
 Min Delay Paths
 --------------------------------------------------------------------------------------
-Slack (VIOLATED) :        -0.091ns  (arrival time - required time)
-  Source:                 U_Uart/workDataLcl_reg[1280]/C
-                            (rising edge-triggered cell FDCE clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
-  Destination:            U_Uart/workDataLcl_reg[1248]_srl32_U_Uart_workDataLcl_reg_c_30/D
-                            (rising edge-triggered cell SRLC32E clocked by ClkOut0Raw  {rise@0.000ns fall@2.000ns period=4.000ns})
+Slack (VIOLATED) :        -0.081ns  (arrival time - required time)
+  Source:                 CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/D0_reg[52]/C
+                            (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.250ns period=4.500ns})
+  Destination:            CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/B0_reg[28]/D
+                            (rising edge-triggered cell FDRE clocked by ClkOut0Raw  {rise@0.000ns fall@2.250ns period=4.500ns})
   Path Group:             ClkOut0Raw
   Path Type:              Hold (Min at Fast Process Corner)
   Requirement:            0.000ns  (ClkOut0Raw rise@0.000ns - ClkOut0Raw rise@0.000ns)
-  Data Path Delay:        0.116ns  (logic 0.038ns (32.759%)  route 0.078ns (67.241%))
-  Logic Levels:           0  
+  Data Path Delay:        0.110ns  (logic 0.057ns (51.818%)  route 0.053ns (48.182%))
+  Logic Levels:           1  (CARRY8=1)
   Clock Path Skew:        0.145ns (DCD - SCD - CPR)
     Destination Clock Delay (DCD):    -0.046ns
     Source Clock Delay      (SCD):    -0.420ns
@@ -367,12 +349,15 @@ Slack (VIOLATED) :        -0.091ns  (arrival time - required time)
                                                      -2.271    -1.669 r  U_Clk/U_Mmcm/CLKOUT0
                          net (fo=1, unplaced)         0.118    -1.551    U_Clk/ClkOut0Raw
                          BUFGCE (Prop_BUFGCE_I_O)     0.017    -1.534 r  U_Clk/U_ClkOutBufg/O
-                         net (fo=192994, unplaced)    1.114    -0.420    U_Uart/MiningClk
-                         FDCE                                         r  U_Uart/workDataLcl_reg[1280]/C
+                         net (fo=765614, unplaced)    1.114    -0.420    CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/MiningClk
+                         FDRE                                         r  CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/D0_reg[52]/C
   -------------------------------------------------------------------    -------------------
-                         FDCE (Prop_FDCE_C_Q)         0.038    -0.382 r  U_Uart/workDataLcl_reg[1280]/Q
-                         net (fo=3, unplaced)         0.078    -0.304    U_Uart/Q[958]
-                         SRLC32E                                      r  U_Uart/workDataLcl_reg[1248]_srl32_U_Uart_workDataLcl_reg_c_30/D
+                         FDRE (Prop_FDRE_C_Q)         0.038    -0.382 r  CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/D0_reg[52]/Q
+                         net (fo=2, unplaced)         0.046    -0.336    CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/D0[52]
+                         CARRY8 (Prop_CARRY8_S[0]_O[0])
+                                                      0.019    -0.317 r  CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/C0_reg[56]_i_1/O[0]
+                         net (fo=1, unplaced)         0.007    -0.310    CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/xor3_out[52]
+                         FDRE                                         r  CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/B0_reg[28]/D
   -------------------------------------------------------------------    -------------------
 
                          (clock ClkOut0Raw rise edge)
@@ -389,16 +374,15 @@ Slack (VIOLATED) :        -0.091ns  (arrival time - required time)
                                                      -2.194    -1.456 r  U_Clk/U_Mmcm/CLKOUT0
                          net (fo=1, unplaced)         0.132    -1.324    U_Clk/ClkOut0Raw
                          BUFGCE (Prop_BUFGCE_I_O)     0.019    -1.305 r  U_Clk/U_ClkOutBufg/O
-                         net (fo=192994, unplaced)    1.259    -0.046    U_Uart/MiningClk
-                         SRLC32E                                      r  U_Uart/workDataLcl_reg[1248]_srl32_U_Uart_workDataLcl_reg_c_30/CLK
+                         net (fo=765614, unplaced)    1.259    -0.046    CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/MiningClk
+                         FDRE                                         r  CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/B0_reg[28]/C
                          clock pessimism             -0.229    -0.275    <hidden>
-                         SRLC32E (Hold_SRLC32E_CLK_D)
-                                                      0.062    -0.213    U_Uart/workDataLcl_reg[1248]_srl32_U_Uart_workDataLcl_reg_c_30
+                         FDRE (Hold_FDRE_C_D)         0.046    -0.229    CoreGen[0].U_Core/U_Stage4/RoundGen[0].Mixer1/MixerGen[0].G/B0_reg[28]
   -------------------------------------------------------------------
-                         required time                          0.213    <hidden>
-                         arrival time                          -0.304    <hidden>
+                         required time                          0.229    <hidden>
+                         arrival time                          -0.310    <hidden>
   -------------------------------------------------------------------
-                         slack                                 -0.091    <hidden>
+                         slack                                 -0.081    <hidden>
 
 
 
@@ -407,14 +391,14 @@ Slack (VIOLATED) :        -0.091ns  (arrival time - required time)
 Pulse Width Checks
 --------------------------------------------------------------------------------------
 Clock Name:         ClkOut0Raw
-Waveform(ns):       { 0.000 2.000 }
-Period(ns):         4.000
+Waveform(ns):       { 0.000 2.250 }
+Period(ns):         4.500
 Sources:            { U_Clk/U_Mmcm/CLKOUT0 }
 
-Check Type        Corner  Lib Pin     Reference Pin  Required(ns)  Actual(ns)  Slack(ns)  Location  Pin
-Min Period        n/a     BUFGCE/I    n/a            1.290         4.000       2.710                U_Clk/U_ClkOutBufg/I
-Low Pulse Width   Slow    SRL16E/CLK  n/a            0.532         2.000       1.468                U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A3_reg[0]_srl2/CLK
-High Pulse Width  Slow    SRL16E/CLK  n/a            0.532         2.000       1.468                U_Core/U_Stage3/RoundGen[11].Mixer2/MixerGen[0].G/A3_reg[0]_srl2/CLK
+Check Type        Corner  Lib Pin   Reference Pin  Required(ns)  Actual(ns)  Slack(ns)  Location  Pin
+Min Period        n/a     BUFGCE/I  n/a            1.290         4.500       3.210                U_Clk/U_ClkOutBufg/I
+Low Pulse Width   Slow    FDRE/C    n/a            0.275         2.250       1.975                CoreGen[0].EnReg_reg/C
+High Pulse Width  Slow    FDRE/C    n/a            0.275         2.250       1.975                CoreGen[0].EnReg_reg/C
 
 
 

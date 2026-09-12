@@ -53,7 +53,22 @@ begin
       CLKFBOUT_PHASE        => 0.000,
       CLKIN1_PERIOD         => 10.000,
       CLKIN2_PERIOD         => 0.000,
-      CLKOUT0_DIVIDE_F      => 4.000,
+      -- VCO 1000 MHz / 4.500 = 222.222 MHz.
+      --
+      -- Backed off from 4.000 (250 MHz) DELIBERATELY, to buy cores. Hash rate is
+      -- cores x clock, and the two are not worth the same: at N=4 one extra core
+      -- is +25% while one divider step is ~3%. Four cores closed at WNS +0.075 ns
+      -- -- under the +0.10 floor -- so 250 MHz cannot carry a fifth. Trading one
+      -- step of clock for a doubling of cores is strongly positive:
+      --
+      --     N=8 @ 222.2 MHz = 1.78 GH/s   vs   N=4 @ 250 MHz = 1.03 GH/s
+      --
+      -- CLB is not the constraint here (N=4 sits at 34.76%); timing is.
+      --
+      -- MUST be kept in step with kBitTimeInClks in OspreyBlake2bUartTop.vhd,
+      -- which is clock/115200. At 222.222 MHz that is 1929, not 2170. A stale
+      -- value there silently kills the UART and the board goes quiet.
+      CLKOUT0_DIVIDE_F      => 4.500,
       CLKOUT0_DUTY_CYCLE    => 0.500,
       CLKOUT0_PHASE         => 0.000,
       REF_JITTER1           => 0.010,

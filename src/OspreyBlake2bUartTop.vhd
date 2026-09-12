@@ -52,15 +52,29 @@ library work;
 
 entity OspreyBlake2bUartTop is
   generic(
-    -- 250 MHz / 115200 baud. Keep in step with clock_mgmt.vhd's MMCM output.
-    kBitTimeInClks : positive := 2170;
+    -- MiningClk / 115200 baud. MUST track clock_mgmt.vhd's CLKOUT0_DIVIDE_F.
+    --   250.000 MHz (divide 4.000) -> 2170
+    --   222.222 MHz (divide 4.500) -> 1929   <-- current
+    -- Getting this wrong does not fail synthesis or timing; the board simply
+    -- goes quiet, because every byte is clocked at the wrong rate.
+    kBitTimeInClks : positive := 1929;
     kNonceSeed     : unsigned(63 downto 0) := (others => '1');
     -- Debug echo: emit one extra frame per work item, tagged 0x02, carrying the
     -- TargetTop64 and Stage3In(0) the core actually parsed. It is what proved the
     -- receive path once the unpack was mirrored, and it costs one frame per work
     -- item, so it stays in the source but is OFF for production. Synthesis
     -- constant-folds the whole path away when this is false.
-    kDebugEcho     : boolean := false
+    kDebugEcho     : boolean := false;
+    -- Number of stage-4 mining cores. The ladder moves this ONE number.
+    --
+    -- Budget after stage 3 was removed: one core is 9,737 CLB = 8.94% of the
+    -- device, so N=4 is ~35.8% of the device but ~71.5% of SLR0 -- the last rung
+    -- that fits in a single SLR without floorplanning. N>=5 needs SLR1, which is
+    -- currently 0.00% used.
+    --
+    -- Each core gets a distinct high-bit nonce slice via CoreNonceSeed, its own
+    -- registered copy of the work item, and a slot in the round-robin arbiter.
+    kNumCores      : positive := 8
   );
   port(
     -- This is the ENTIRE chip interface, and it matches the vendor's
@@ -88,6 +102,22 @@ architecture rtl of OspreyBlake2bUartTop is
 
   signal WorkData   : std_logic_vector(kRxBits-1 downto 0);
   signal NewWork    : boolean;
+
+  -- A COMPLETE work item, latched on NewWork. The core must never see the
+  -- receiver's live shift register; see the comment above UnpackGen.
+  signal WorkDataHeld : std_logic_vector(kRxBits-1 downto 0) := (others => '0');
+
+  -- Clock enable for WorkDataHeld, kept as its own signal purely so it can carry
+  -- MAX_FANOUT. NewWork is one flop and WorkDataHeld is 1,344 of them, so the
+  -- unreplicated enable became the design's worst setup path the moment stage 3
+  -- was removed: post-R1 the critical path was NewWork_reg/C ->
+  -- WorkDataHeld_reg[647]/CE, and WNS fell from +0.453 to +0.215 (fmax 282 ->
+  -- 264 MHz) even though the design had halved in size. Letting the tool
+  -- replicate the driver turns one 1344-load net into ~21 short ones. The fanout
+  -- is fixed by the register width, so it does NOT grow with core count.
+  signal NewWorkCe : std_logic;
+  attribute max_fanout : integer;
+  attribute max_fanout of NewWorkCe : signal is 64;
   signal ResultData : std_logic_vector(kTxBits-1 downto 0);
 
   signal Stage3In     : U64Array_t(9 downto 0);
@@ -100,6 +130,24 @@ architecture rtl of OspreyBlake2bUartTop is
   signal TxTrigger    : boolean;
   signal Nonce        : unsigned(63 downto 0);
   signal HashTop64    : unsigned(63 downto 0);
+
+  -- Arbitrated result path. Even at one core the transmitter silently dropped
+  -- any Success raised while a frame was in flight; measured on hardware that
+  -- cost 20% at 45 frames/s and 4% at 13 frames/s. The arbiter gives every core
+  -- a capture slot and a counted, saturating drop counter, so nothing is lost
+  -- without being counted.
+  -- Flattened per-core result bus into the arbiter.
+  signal CoreSuccess : std_logic_vector(kNumCores-1 downto 0);
+  signal CoreNonceV  : std_logic_vector(64*kNumCores-1 downto 0);
+  signal CoreHashV   : std_logic_vector(64*kNumCores-1 downto 0);
+
+  attribute dont_touch : string;
+
+  signal TxReady    : boolean;
+  signal ArbValid   : boolean;
+  signal ArbNonce   : unsigned(63 downto 0);
+  signal ArbHash    : unsigned(63 downto 0);
+  signal ArbDrops   : std_logic_vector(16*kNumCores-1 downto 0);
 
 begin
 
@@ -157,8 +205,9 @@ begin
     Tx         => tx,
     NewWork    => NewWork,
     WorkData   => WorkData,
-    Success    => SuccessBool,
-    ResultData => ResultData
+    Success     => SuccessBool,
+    ResultData  => ResultData,
+    ResultReady => TxReady
   );
 
   ---------------------------------------------------------------------------
@@ -188,11 +237,50 @@ begin
   -- The result frame is unaffected: its low byte is transmitted first, and
   -- reading the nonce little-endian yields values that track kNonceSeed exactly,
   -- so that path was always correct.
+  -- The core is fed from a HELD copy, never from WorkData directly.
+  --
+  -- WorkData is the receiver's live shift register, driven straight out of
+  -- OspreyBlake2bUartGetWork. A 168-byte item takes 14.58 ms to clock in at
+  -- 115200 baud, and during all of it the top 64 bits -- which is where
+  -- TargetTop64 is sliced from -- hold the eight most recently arrived bytes.
+  -- Those bytes are digest material, i.e. effectively uniform random. The
+  -- pipeline free-runs, so `Hash0 < TargetTop64` was comparing one pseudo-random
+  -- 64-bit value against another and came out true on roughly half of the
+  -- ~3.65 million clocks in that window. The transmitter's `when Idle => if
+  -- Success` is level-sensitive, so it re-armed immediately and streamed frames
+  -- back to back for the whole transfer.
+  --
+  -- On the wire that showed up as exactly 16 bytes read per work push, every
+  -- push, forever: the host sits in uart_write's TX_FULL spin for ~13.2 ms of
+  -- the 14.58 ms and cannot drain, so it can only ever recover one RX FIFO's
+  -- worth. 16 is the FIFO depth, not a frame length -- the giveaway that the
+  -- burst was never a frame boundary at all.
+  --
+  -- Latching on NewWork fixes it at the source. NewWork is a one-cycle pulse
+  -- raised after the final byte is shifted in, so workDataLcl is already
+  -- complete when it fires. WorkDataHeld resets to all zeros, which makes
+  -- TargetTop64 = 0 before the first item ever lands -- and nothing is ever
+  -- below zero, so the core stays silent until it has real work. RunCtl drops
+  -- Enable on the same NewWork pulse, so the message and the nonce reload land
+  -- together and the core resumes on a consistent view.
+  NewWorkCe <= '1' when NewWork else '0';
+
+  HoldWork: process(aResetInt, MiningClk)
+  begin
+    if aResetInt = '1' then
+      WorkDataHeld <= (others => '0');
+    elsif rising_edge(MiningClk) then
+      if NewWorkCe = '1' then
+        WorkDataHeld <= WorkData;
+      end if;
+    end if;
+  end process;
+
   UnpackGen: for i in 0 to 9 generate
-    Stage3In(i) <= unsigned(WorkData(64*i        + 63 downto 64*i));
-    Stage4In(i) <= unsigned(WorkData(64*(10 + i) + 63 downto 64*(10 + i)));
+    Stage3In(i) <= unsigned(WorkDataHeld(64*i        + 63 downto 64*i));
+    Stage4In(i) <= unsigned(WorkDataHeld(64*(10 + i) + 63 downto 64*(10 + i)));
   end generate;
-  TargetTop64 <= unsigned(WorkData(64*20 + 63 downto 64*20));
+  TargetTop64 <= unsigned(WorkDataHeld(64*20 + 63 downto 64*20));
 
   ---------------------------------------------------------------------------
   -- Run control. NewWork drops Enable for a single cycle, which reloads the
@@ -229,20 +317,64 @@ begin
   ---------------------------------------------------------------------------
   -- The BLAKE2b mining pipeline
   ---------------------------------------------------------------------------
-  U_Core: entity work.OspreyBlake2bTop
-  generic map(
-    kNonceSeed => kNonceSeed
-  )
-  port map(
-    Clk         => MiningClk,
-    Enable      => Enable,
-    Stage3In    => Stage3In,
-    Stage4In    => Stage4In,
-    TargetTop64 => TargetTop64,
-    Success     => Success,
-    Nonce       => Nonce,
-    HashTop64   => HashTop64
-  );
+  -- kNumCores cores, each on its OWN registered copy of the work item, the
+  -- target and enable.
+  --
+  -- The registration is not cosmetic. MixG_FlopPipe_4 takes its operands
+  -- combinationally, so every work-item bit reaches all 96 G units of a core;
+  -- driving N cores from one net multiplies that fanout by N and the critical
+  -- path degrades linearly in N. This design has already been bitten twice by
+  -- exactly that: post-R1 the worst path was NewWork -> WorkDataHeld[*].CE
+  -- (1,344 loads), and post-R2 it is Enable -> Stage4/Nonce_reg[*].S (768 loads
+  -- at ONE core, so N*768 at N). A register per core makes each net drive one
+  -- core's worth and nothing more.
+  --
+  -- DONT_TOUCH is mandatory: the N copies are bit-identical, and without it
+  -- Vivado merges them straight back into one register and the fanout reduction
+  -- -- the entire point -- silently disappears.
+  CoreGen: for k in 0 to kNumCores-1 generate
+    signal S4Reg  : U64Array_t(9 downto 0);
+    signal TgtReg : unsigned(63 downto 0);
+    signal EnReg  : std_logic;
+    signal Succ_k : std_logic;
+    signal Nonce_k, Hash_k : unsigned(63 downto 0);
+
+    attribute dont_touch of S4Reg  : signal is "true";
+    attribute dont_touch of TgtReg : signal is "true";
+    attribute dont_touch of EnReg  : signal is "true";
+  begin
+    -- The work item is quasi-static (one change per ~30 s pool notify), so an
+    -- extra cycle of latency costs nothing. Enable goes through the SAME depth
+    -- so the message and the nonce reload still land together.
+    PerCoreReg: process(MiningClk)
+    begin
+      if rising_edge(MiningClk) then
+        S4Reg  <= Stage4In;
+        TgtReg <= TargetTop64;
+        EnReg  <= Enable;
+      end if;
+    end process;
+
+    U_Core: entity work.OspreyBlake2bTop
+    generic map(
+      kNonceSeed    => CoreNonceSeed(k, kNumCores),
+      kOnChipStage3 => false
+    )
+    port map(
+      Clk         => MiningClk,
+      Enable      => EnReg,
+      Stage3In    => Stage3In,      -- unused when kOnChipStage3 is false
+      Stage4In    => S4Reg,
+      TargetTop64 => TgtReg,
+      Success     => Succ_k,
+      Nonce       => Nonce_k,
+      HashTop64   => Hash_k
+    );
+
+    CoreSuccess(k) <= Succ_k;
+    CoreNonceV(64*k + 63 downto 64*k) <= std_logic_vector(Nonce_k);
+    CoreHashV (64*k + 63 downto 64*k) <= std_logic_vector(Hash_k);
+  end generate CoreGen;
 
   ---------------------------------------------------------------------------
   -- Debug echo: report what the core actually PARSED out of the work item.
@@ -282,7 +414,31 @@ begin
   -- The transmitter latches on a RISING edge, so the debug pulse and a candidate
   -- must not be asserted in the same cycle or one would be swallowed. NewWork
   -- has just reloaded the nonce iterator, so no candidate is pending here.
-  TxTrigger <= DbgPulse or (Success = '1');
+  ---------------------------------------------------------------------------
+  -- Result arbitration. At kNumCores = 1 this is a one-slot buffer, which is
+  -- still worth having: it converts "Success while TX busy is silently thrown
+  -- away" into "Success is held until the transmitter can take it, and if it
+  -- cannot, the loss is counted".
+  ---------------------------------------------------------------------------
+  U_Arb: entity work.OspreyBlake2bResultArb
+  generic map(
+    kNumCores => kNumCores,
+    kIdxBits  => ClogB2(kNumCores)
+  )
+  port map(
+    Clk         => MiningClk,
+    aReset      => aResetInt,
+    CoreSuccess => CoreSuccess,
+    CoreNonce   => CoreNonceV,
+    CoreHash    => CoreHashV,
+    ResultReady => TxReady,
+    ResultValid => ArbValid,
+    ResultNonce => ArbNonce,
+    ResultHash  => ArbHash,
+    DropCount   => ArbDrops
+  );
+
+  TxTrigger <= DbgPulse or ArbValid;
 
   ---------------------------------------------------------------------------
   -- Pack the reply. The transmitter shifts the LOW byte out first, so the flag
@@ -290,7 +446,7 @@ begin
   ---------------------------------------------------------------------------
   ResultData <= (std_logic_vector(Stage3In(0)) & std_logic_vector(TargetTop64) & x"02")
                 when DbgPulse else
-                (std_logic_vector(HashTop64) & std_logic_vector(Nonce) & x"01");
+                (std_logic_vector(ArbHash) & std_logic_vector(ArbNonce) & x"01");
 
   SuccessBool <= TxTrigger;
 

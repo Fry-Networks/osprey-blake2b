@@ -78,4 +78,65 @@ package PkgOspreyBlake2b is
   ---------------------------------------------------------------------------
   constant kNonceSigmaIdx : integer := 4;
 
+  ---------------------------------------------------------------------------
+  -- Multi-core nonce partitioning
+  ---------------------------------------------------------------------------
+  -- A core seeded with S tests exactly the contiguous run S, S+1, S+2, ... one
+  -- per clock. (The twelve Nonce registers inside the stage-4 core are twelve
+  -- TIME-SKEWED views of one counter -- the offsets match how many cycles round
+  -- i lags round 0 -- not twelve independent nonces. All twelve advance by 1
+  -- every clock.)
+  --
+  -- So give core k the top of its own 1/2^m slice:
+  --
+  --     S_k = (k << (64 - m)) - 1,     m = ClogB2(N)
+  --
+  -- Non-overlap is structural, not probabilistic. For core j to reach core k's
+  -- slice it must grind (k-j) * 2^(64-m) nonces; at N=8 that is >= 2^61. A work
+  -- item lives ~30 s, which at 250 MHz is 7.5e9 clocks -- about 3e-9 of one
+  -- slice. Exhausting a slice would take ~292,000 years.
+  --
+  -- The -1 matters: for k=0 this is all-ones, bit-identical to the single-core
+  -- default, so N=1 reduces exactly to today's build and miner.c's
+  -- `from_seed = 0 - r.nonce /* kNonceSeed is all ones */` stays true.
+  -- numeric_std defines shift_left with a count >= the vector length as zeros,
+  -- so the k=0 case is well-defined rather than relying on wrap.
+  --
+  -- Do NOT use a stride/interleave instead: keeping the twelve registers aligned
+  -- under a +N increment would also require rescaling the skew table and the
+  -- `NonceOut <= Nonce(0) - (kPipeLength+1)` correction, i.e. edits INSIDE
+  -- OspreyBlake2bStage4Core -- which would invalidate tb_stage4_smoke,
+  -- tb_stage4_prefilter and tb_stage4_compare, the three benches that exist
+  -- precisely because prefilter bugs reached silicon before.
+  --
+  -- Do NOT use kNonceSeed + k either: adjacent seeds mean core k+1 tests at
+  -- cycle t what core k tested at cycle t+1 -- near-total duplicate work that
+  -- looks like a healthy N-core miner in every metric except hash rate.
+  --
+  -- Free consequence: the top m bits of any verified nonce ARE the core index,
+  -- so per-core liveness is observable host-side at zero protocol cost.
+  function ClogB2(n : positive) return natural;
+  function CoreNonceSeed(idx : natural; n : positive) return unsigned;
+
+end PkgOspreyBlake2b;
+
+package body PkgOspreyBlake2b is
+
+  function ClogB2(n : positive) return natural is
+    variable r : natural  := 0;
+    variable v : positive := 1;
+  begin
+    while v < n loop
+      v := v * 2;
+      r := r + 1;
+    end loop;
+    return r;
+  end function;
+
+  function CoreNonceSeed(idx : natural; n : positive) return unsigned is
+    constant m : natural := ClogB2(n);
+  begin
+    return shift_left(to_unsigned(idx, 64), 64 - m) - 1;
+  end function;
+
 end PkgOspreyBlake2b;

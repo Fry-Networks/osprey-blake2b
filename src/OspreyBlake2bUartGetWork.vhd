@@ -34,7 +34,14 @@ entity OspreyBlake2bUartGetWork is
     WorkData   : out std_logic_vector(kRxBytes*8-1 downto 0);
     -- Rising edge latches ResultData and starts the reply transmission.
     Success    : in  boolean;
-    ResultData : in  std_logic_vector(kTxBytes*8-1 downto 0)
+    ResultData : in  std_logic_vector(kTxBytes*8-1 downto 0);
+    -- True while the transmitter is idle and will accept a Success THIS cycle.
+    -- Without it there is no backpressure at all: a Success asserted while a
+    -- frame is in flight is silently discarded, which is measurable throughput
+    -- loss even at one core and becomes unfair starvation with several.
+    -- This is a pure read of an existing state register -- it adds no logic to
+    -- the RX or TX datapaths and cannot affect framing.
+    ResultReady : out boolean
   );
 end OspreyBlake2bUartGetWork;
 
@@ -46,7 +53,8 @@ architecture rtl of OspreyBlake2bUartGetWork is
   signal txState : TxState_t;
 
   signal rx, rx_ms, rx_dly : std_logic;
-  signal bitTime      : boolean;
+  signal bitTime      : boolean;   -- RX cell timing; re-phased on every start bit
+  signal txBitTime    : boolean;   -- TX cell timing; free-running, never re-phased
   signal restartBaud  : boolean;
   signal rxBitCount, txBitCount   : natural;
   signal rxByteCount, txByteCount : natural;
@@ -54,6 +62,7 @@ architecture rtl of OspreyBlake2bUartGetWork is
   signal resultLcl    : std_logic_vector(kTxBytes*8-1 downto 0);
   signal byteOut      : std_logic_vector(9 downto 0); -- 1 start, 8 data, 1 stop
   signal clkCount     : integer := 0;
+  signal txClkCount   : integer := 0;
 
 begin
 
@@ -88,6 +97,41 @@ begin
       elsif clkCount = kBitTimeInClks then
         bitTime  <= true;
         clkCount <= 0;
+      end if;
+    end if;
+  end process;
+
+  ---------------------------------------------------------------------------
+  -- TX baud generator, deliberately SEPARATE from the RX one.
+  --
+  -- The transmitter used to share bitTime. But restartBaud is asserted by the
+  -- RECEIVER on every start-bit edge and preloads clkCount to -(kBitTimeInClks/2)
+  -- to centre RX sampling -- which also yanks the phase out from under any TX
+  -- byte that happens to be in flight, shifting its remaining bit cells by up to
+  -- half a cell. A 168-byte work item does that 168 times across 14.58 ms.
+  --
+  -- With one core and rare candidates the two almost never overlap, and the
+  -- host's "three unparseable frames in a row -> resync" papers over the times
+  -- they do. Once the result path is busy -- more cores, or simply a looser
+  -- bring-up target -- a reception landing inside a frame stops being unlucky
+  -- and becomes routine, and the corruption is silent: a shifted bit cell yields
+  -- a well-formed frame carrying wrong bytes.
+  --
+  -- This counter free-runs and is never re-phased. TX cell width is therefore
+  -- always exactly kBitTimeInClks regardless of what the receiver is doing. The
+  -- RX path below is untouched.
+  ---------------------------------------------------------------------------
+  TxBaudGen: process(aReset, Clk)
+  begin
+    if aReset = '1' then
+      txBitTime  <= false;
+      txClkCount <= 0;
+    elsif rising_edge(Clk) then
+      txBitTime  <= false;
+      txClkCount <= txClkCount + 1;
+      if txClkCount = kBitTimeInClks then
+        txBitTime  <= true;
+        txClkCount <= 0;
       end if;
     end if;
   end process;
@@ -163,7 +207,7 @@ begin
           end if;
 
         when LoadByte =>
-          if bitTime then
+          if txBitTime then
             byteOut     <= '1' & resultLcl(7 downto 0) & '0';  -- stop & data & start
             resultLcl   <= x"00" & resultLcl(resultLcl'high downto 8);
             txByteCount <= txByteCount + 1;
@@ -172,7 +216,7 @@ begin
           end if;
 
         when ShiftOut =>
-          if bitTime then
+          if txBitTime then
             byteOut    <= '1' & byteOut(byteOut'high downto 1);
             txBitCount <= txBitCount + 1;
             if txBitCount = byteOut'length then
@@ -190,5 +234,7 @@ begin
   end process;
 
   Tx <= byteOut(0);  -- LSB first
+
+  ResultReady <= (txState = Idle);
 
 end rtl;

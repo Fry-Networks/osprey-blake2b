@@ -131,7 +131,11 @@ begin
     NewWork    => NewWork,
     WorkData   => WorkData,
     Success    => SuccessBool,
-    ResultData => ResultData
+    ResultData => ResultData,
+    -- The Siacoin chain keeps the original unarbitrated result path. Left open
+    -- deliberately rather than wired, so this build's behaviour is unchanged by
+    -- the blake2b arbiter work.
+    ResultReady => open
   );
 
   ---------------------------------------------------------------------------

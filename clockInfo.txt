@@ -1,6 +1,6 @@
 -------------------------------------
 | Tool Version : Vivado v.2026.1
-| Date         : Wed Sep  9 03:06:39 2026
+| Date         : Sat Sep 12 00:26:37 2026
 | Host         : FryStation
 | Design       : design_1
 | Device       : xcvu35p-fsvh2104-2-E-
@@ -28,7 +28,7 @@ Clock Nets/Source Overview (CRP Input)
 Clock 1: U_Clk/MiningClk
 	Clock source type: BUFGCE
 	Clock source region: X4Y0
-	initial rect X0Y0:X7Y3
+	initial rect X0Y0:X7Y7
 
 Clock 2: U_Clk/FbIn
 	Clock source type: BUFGCE
