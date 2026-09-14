@@ -143,6 +143,59 @@ architecture rtl of OspreyBlake2bUartTop is
 
   attribute dont_touch : string;
 
+  ---------------------------------------------------------------------------
+  -- Broadcast trunk: one registered PAIR per core group, one group per SLR.
+  --
+  -- WHY. A routed-checkpoint sweep of the 3,538 worst setup paths (slack 0.123
+  -- to 0.458 ns) found that EVERY ONE of them is this distribution network --
+  -- work broadcast, enable fanout, target fanout, S4Reg->mixer -- and NOT the
+  -- BLAKE2b datapath, which never appears. They share a signature:
+  --
+  --     Data Path Delay: 4.049ns  (logic 0.079ns (1.951%) route 3.970ns (98.049%))
+  --     Logic Levels:    0
+  --
+  -- Zero logic levels and 98% routing. Post-synthesis WNS is +2.055 ns, i.e.
+  -- the math alone would run at ~409 MHz. The clock is limited by wires.
+  --
+  -- The worst of them runs SLICE_X125Y130 (SLR0) to SLICE_X143Y362 (SLR1) and
+  -- pays a 0.227 ns inter-SLR pessimism penalty on top. utilization.txt section
+  -- 12 explains why: 1,996 SLR crossings in use and "Using Both TX_REG and
+  -- RX_REG: 0" -- every crossing in this design is an unregistered wire, with
+  -- SLLs only 8.66% used. The registers were simply never asked for.
+  --
+  -- DEPTH IS TWO, not one. One stage halves the hop; two puts a flop on EACH
+  -- side of the die boundary, which is what makes the crossing eligible for the
+  -- Laguna TX_REG/RX_REG sites. Success metric for this change is therefore not
+  -- just WNS: utilization.txt section 12 must stop reporting zero.
+  --
+  -- NO CLOCK ENABLE AND NO RESET, deliberately. A control set disqualifies these
+  -- flops from the Laguna sites and would re-attach 705 registers to the
+  -- NewWorkCe tree for nothing. The work item is static for ~14.58 ms, so
+  -- re-registering it every cycle costs a flop and buys a clean control set.
+  --
+  -- DONT_TOUCH for the same reason as the per-core copies below: the groups are
+  -- bit-identical and Vivado merges them back into one otherwise.
+  --
+  -- LATENCY: two extra cycles from work item to core. Enable travels the SAME
+  -- two stages, so message and nonce reload still land together at every core
+  -- and no core can start on a half-updated item.
+  constant kNumGroups   : positive := 2;                 -- one per SLR
+  constant kCoresPerGrp : positive := kNumCores / kNumGroups;
+
+  type U64Array2D_t is array (natural range <>) of U64Array_t(9 downto 0);
+  type U64Vec_t     is array (natural range <>) of unsigned(63 downto 0);
+
+  signal BcS4Tx,  BcS4Rx  : U64Array2D_t(kNumGroups-1 downto 0);
+  signal BcTgtTx, BcTgtRx : U64Vec_t(kNumGroups-1 downto 0);
+  signal BcEnTx,  BcEnRx  : std_logic_vector(kNumGroups-1 downto 0) := (others => '0');
+
+  attribute dont_touch of BcS4Tx  : signal is "true";
+  attribute dont_touch of BcS4Rx  : signal is "true";
+  attribute dont_touch of BcTgtTx : signal is "true";
+  attribute dont_touch of BcTgtRx : signal is "true";
+  attribute dont_touch of BcEnTx  : signal is "true";
+  attribute dont_touch of BcEnRx  : signal is "true";
+
   signal TxReady    : boolean;
   signal ArbValid   : boolean;
   signal ArbNonce   : unsigned(63 downto 0);
@@ -332,6 +385,23 @@ begin
   -- DONT_TOUCH is mandatory: the N copies are bit-identical, and without it
   -- Vivado merges them straight back into one register and the fanout reduction
   -- -- the entire point -- silently disappears.
+  -- Launch side in SLR0 near the boundary, capture side in the group's own SLR.
+  -- The placer is left to find the Laguna sites rather than being pinned to a
+  -- clock region on the first attempt.
+  BcastGen: for g in 0 to kNumGroups-1 generate
+    Trunk: process(MiningClk)
+    begin
+      if rising_edge(MiningClk) then
+        BcS4Tx(g)  <= Stage4In;       -- launch
+        BcTgtTx(g) <= TargetTop64;
+        BcEnTx(g)  <= Enable;
+        BcS4Rx(g)  <= BcS4Tx(g);      -- capture, across the die boundary
+        BcTgtRx(g) <= BcTgtTx(g);
+        BcEnRx(g)  <= BcEnTx(g);
+      end if;
+    end process;
+  end generate BcastGen;
+
   CoreGen: for k in 0 to kNumCores-1 generate
     signal S4Reg  : U64Array_t(9 downto 0);
     signal TgtReg : unsigned(63 downto 0);
@@ -349,9 +419,9 @@ begin
     PerCoreReg: process(MiningClk)
     begin
       if rising_edge(MiningClk) then
-        S4Reg  <= Stage4In;
-        TgtReg <= TargetTop64;
-        EnReg  <= Enable;
+        S4Reg  <= BcS4Rx (k / kCoresPerGrp);
+        TgtReg <= BcTgtRx(k / kCoresPerGrp);
+        EnReg  <= BcEnRx (k / kCoresPerGrp);
       end if;
     end process;
 

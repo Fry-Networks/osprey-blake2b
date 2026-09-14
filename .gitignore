@@ -66,3 +66,10 @@ miner/siacoin
 miner/siacoin_host
 sia_pairs.txt
 src/sia/ghdl-work/
+
+# Vivado analysis reports from tcl/forensics*.tcl. Their headers embed the
+# invoking absolute path (…/reports/fx_*.txt), i.e. the profile directory, so
+# they must never be committed. Keep them as local run evidence only.
+reports/fx_*.txt
+reports/r1_*.txt
+build/*.txt
