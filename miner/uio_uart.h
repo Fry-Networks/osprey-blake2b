@@ -42,10 +42,28 @@ typedef struct {
     uint64_t overruns;       /* STAT_OVERRUN seen during reads */
     uint64_t rx_bytes;
     uint64_t tx_bytes;
+
+    /* Scripted virtual device, for tests only. Set by uart_open_sim(); zero on
+     * every real device. frame_sync()'s contract is a TIMING claim -- "3ms of
+     * silence means the next byte starts a frame" -- and a live board will not
+     * reproduce a chosen arrival pattern on request. sim_at_us[i] is when byte
+     * sim_buf[i] becomes readable, in microseconds after uart_open_sim(). */
+    const uint8_t  *sim_buf;
+    const uint64_t *sim_at_us;
+    size_t          sim_len;
+    size_t          sim_pos;
+    uint64_t        sim_t0_us;   /* non-zero == simulation active */
 } uio_uart_t;
 
 int      uart_open(uio_uart_t *u, const char *dev);
 void     uart_close(uio_uart_t *u);
+
+/* Open a scripted virtual device instead of a real one. TEST ONLY -- nothing in
+ * the production path calls this, and with sim_t0_us zero every function below
+ * behaves exactly as before. Reads are served from buf[] on the schedule in
+ * at_us[] (microseconds since this call); no register is ever touched. */
+void     uart_open_sim(uio_uart_t *u, const uint8_t *buf,
+                       const uint64_t *at_us, size_t n);
 uint32_t uart_stat(uio_uart_t *u);
 void     uart_reset_fifos(uio_uart_t *u);
 

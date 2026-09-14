@@ -73,8 +73,28 @@ int uart_put(uio_uart_t *u, uint8_t b, unsigned timeout_us)
     return 0;
 }
 
+void uart_open_sim(uio_uart_t *u, const uint8_t *buf,
+                   const uint64_t *at_us, size_t n)
+{
+    memset(u, 0, sizeof *u);
+    u->fd        = -1;
+    u->sim_buf   = buf;
+    u->sim_at_us = at_us;
+    u->sim_len   = n;
+    u->sim_t0_us = now_us();
+    if (!u->sim_t0_us) u->sim_t0_us = 1;   /* 0 is the "not simulating" sentinel */
+}
+
 int uart_get_nb(uio_uart_t *u, uint8_t *b)
 {
+    if (u->sim_t0_us) {                     /* scripted device; see uart_open_sim */
+        if (u->sim_pos >= u->sim_len) return 0;
+        if (now_us() - u->sim_t0_us < u->sim_at_us[u->sim_pos]) return 0;
+        *b = u->sim_buf[u->sim_pos++];
+        u->rx_bytes++;
+        return 1;
+    }
+
     uint32_t s = uart_stat(u);
     if (s & STAT_OVERRUN) u->overruns++;
     if (!(s & STAT_RX_VALID)) return 0;

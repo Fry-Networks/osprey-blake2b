@@ -119,6 +119,12 @@ static struct {
     char     payout_address[80];
     uint64_t blocks_submitted, blocks_accepted;
     char     last_submit[128];
+    /* Framing health. The quiet-line sync below trades a loud, repeated failure
+     * for a silent success, so without these "synced and the part has nothing
+     * to report" and "the part is dead" look identical from outside -- and at a
+     * real share target the healthy case is silent for hours at a time. */
+    uint64_t sync_quiet, sync_gap, sync_locked, sync_failed;
+    uint64_t last_frame_at;
 } st = { .st_vectors = -1, .st_uart = -1, .st_loopback = -1, .nonce_offset = 97 };
 
 /* The current template's block material, kept so a winning nonce can be turned
@@ -223,6 +229,7 @@ static void write_status(uio_uart_t *u)
         "  \"frames_ok\": %llu,\n"
         "  \"frames_bad\": %llu,\n"
         "  \"candidates_verified\": %llu,\n"
+        "  \"framing\": { \"quiet\": %llu, \"gap\": %llu, \"locked\": %llu, \"failed\": %llu, \"secs_since_frame\": %lld },\n"
         "  \"uart\": { \"rx_bytes\": %llu, \"tx_bytes\": %llu, \"overruns\": %llu, \"tx_stall_us\": %llu },\n"
         "  \"last_nonce\": \"%s\",\n"
         "  \"last_hash_top64\": \"%s\",\n"
@@ -246,6 +253,9 @@ static void write_status(uio_uart_t *u)
         (unsigned long long)st.last_template_height,
         (unsigned long long)st.items_sent, (unsigned long long)st.frames_ok,
         (unsigned long long)st.frames_bad, (unsigned long long)st.candidates_verified,
+        (unsigned long long)st.sync_quiet, (unsigned long long)st.sync_gap,
+        (unsigned long long)st.sync_locked, (unsigned long long)st.sync_failed,
+        st.last_frame_at ? (long long)(now_s() - st.last_frame_at) : -1LL,
         u ? (unsigned long long)u->rx_bytes : 0ULL,
         u ? (unsigned long long)u->tx_bytes : 0ULL,
         u ? (unsigned long long)u->overruns : 0ULL,
@@ -854,8 +864,22 @@ static int selftest_rxdump(uio_uart_t *u)
  * to fix a misalignment in what we were READING, and then retried 168 times --
  * whereas pure luck on a 17-byte period should have succeeded about one attempt
  * in seventeen. */
+/* quiet_ok distinguishes the two things callers want from this function.
+ *
+ * The mining loop wants an ALIGNMENT CLAIM: at a real share target the line is
+ * silent for hours between candidates, and silence with an empty FIFO is a
+ * perfectly good place to start reading. It passes quiet_ok = 1.
+ *
+ * selftest_loopback wants BYTES TO VERIFY, and uses silence to mean "this
+ * receive phase is dead" while it searches all 168 of them. It passes 0, so a
+ * quiet line still fails and dead-FPGA detection is preserved.
+ *
+ * This was originally inferred from out_buf being NULL, which happened to
+ * correlate -- until the mining loop needed the bytes too (it was discarding
+ * the very candidate that triggered its sync). Making it explicit is what stops
+ * that from being re-derived wrongly a third time. */
 static int frame_sync(uio_uart_t *u, unsigned timeout_s,
-                      uint8_t *out_buf, size_t *out_len)
+                      uint8_t *out_buf, size_t *out_len, int quiet_ok)
 {
     enum { NSYNC = 512 };
     static uint8_t buf[NSYNC];
@@ -894,8 +918,41 @@ static int frame_sync(uio_uart_t *u, unsigned timeout_s,
                     memcpy(out_buf, buf, got);
                     *out_len = got;
                 }
+                st.sync_gap++;
                 logf_line("frame_sync: idle gap after %u bytes — aligned on the gap",
                           (unsigned)got);
+                return 0;
+            }
+
+            /* Quiet line, nothing consumed.
+             *
+             * At a real share target the part reports roughly one candidate
+             * every few hours, so almost every sync window sees ZERO bytes.
+             * Requiring got > 0 above therefore made syncing impossible in the
+             * only regime that matters: on the live device this branch was
+             * reached 32,786 times against 14 successes, and because each miss
+             * costs the caller's full timeout it burned ~90% of the process's
+             * uptime and starved the pool poll along with it.
+             *
+             * An empty FIFO after 3ms of silence is a STRONGER alignment claim
+             * than the gap path's, not a weaker one. A frame is 17 bytes sent
+             * back to back -- at most one bit cell (8.7us) between them, 1.62ms
+             * end to end -- so 15 consecutive empty polls cannot land inside
+             * one. Nothing has been read, so there is no partial frame anywhere
+             * and the next byte to arrive is byte 0 by construction.
+             *
+             * Restricted to callers that do not want bytes back. selftest_
+             * loopback gates on `synced && rxlen >= RESULT_LEN` and uses a
+             * silent line to mean "this receive phase is dead"; handing it a
+             * bare success with no bytes would disable verification at all 168
+             * phases and, under Restart=always, loop the boot. It passes
+             * quiet_ok = 0, and case "loopback-guard" in selftest_framing()
+             * pins that distinction. */
+            if (idle_us >= 3000 && got == 0 && quiet_ok) {
+                if (out_len) *out_len = 0;
+                st.sync_quiet++;
+                logf_line("frame_sync: line quiet, FIFO empty — aligned by "
+                          "construction, nothing consumed");
                 return 0;
             }
         }
@@ -905,6 +962,7 @@ static int frame_sync(uio_uart_t *u, unsigned timeout_s,
     /* Dense stream: no gap ever appeared, so fall back to the periodicity of the
      * flag byte. */
     if (got < RESULT_LEN * 4u) {
+        st.sync_failed++;
         logf_line("frame_sync: only %u bytes and no idle gap, need at least %u "
                   "to find the period", (unsigned)got, (unsigned)(RESULT_LEN * 4u));
         return -1;
@@ -923,6 +981,7 @@ static int frame_sync(uio_uart_t *u, unsigned timeout_s,
      * bucket would just manufacture plausible-looking garbage. */
     unsigned frames = (unsigned)(got / RESULT_LEN);
     if (bucket[best] * 2u < frames) {
+        st.sync_failed++;
         logf_line("frame_sync: no dominant residue (best=%d count=%u over ~%u frames)"
                   " — stream is not framed", best, bucket[best], frames);
         return -1;
@@ -944,6 +1003,7 @@ static int frame_sync(uio_uart_t *u, unsigned timeout_s,
      * away. Everything after the skip above is on a frame boundary, so read a
      * few frames' worth and return them. */
     size_t want = RESULT_LEN * 8;
+    st.sync_locked++;
     if (out_buf && out_len) {
         size_t n = 0;
         uint64_t rd_deadline = now_s() + 3;
@@ -960,6 +1020,143 @@ static int frame_sync(uio_uart_t *u, unsigned timeout_s,
                   best, bucket[best], frames, skip);
     }
     return 0;
+}
+
+/* ---- framing selftest ---------------------------------------------------
+ *
+ * frame_sync()'s contract is a TIMING claim -- "the FIFO has been empty for
+ * 3ms, therefore the next byte starts a frame" -- and a live board will not
+ * reproduce a chosen arrival pattern on request. The production regime that
+ * matters here is the SPARSE one: at MRR difficulty 16384 the part emits one
+ * candidate every ~11 hours, so every frame_sync window sees zero bytes. That
+ * regime had no coverage at all, and the loopback selftest exercises only the
+ * opposite extreme (MAX target, transmitter saturated). Hence uart_open_sim():
+ * a scripted device, so both regimes are testable in ~7 seconds on any host.
+ *
+ * Runs with no hardware, so it is dispatched alongside the other pure-compute
+ * selftests, before uart_open(). */
+
+static void framing_make(uint8_t f[RESULT_LEN], uint64_t nonce, uint64_t hash)
+{
+    f[0] = 0x01;
+    for (int i = 0; i < 8; ++i) f[1 + i] = (uint8_t)(nonce >> (8 * i));
+    for (int i = 0; i < 8; ++i) f[9 + i] = (uint8_t)(hash  >> (8 * i));
+}
+
+static int framing_fail(const char *name, const char *why)
+{
+    printf("SELFTEST framing FAIL: %s -- %s\n", name, why);
+    return 1;
+}
+
+static int selftest_framing(void)
+{
+    enum { NF = 40 };
+    static uint8_t  buf[NF * RESULT_LEN];
+    static uint64_t at [NF * RESULT_LEN];
+    uio_uart_t u;
+    uint8_t    out[512];
+    size_t     outlen;
+    int        bad = 0;
+
+    const uint64_t kNonce = 0xe000000000763b60ULL;
+    const uint64_t kHash  = 0x4f753d7193417e00ULL;
+    uint8_t frame[RESULT_LEN];
+    framing_make(frame, kNonce, kHash);
+
+    /* 1. A line that never speaks. This is the production case: the part has
+     *    nothing below target to report. The FIFO is empty and stays empty, so
+     *    alignment is trivially correct and NOTHING has been consumed -- a
+     *    stronger guarantee than the gap path gives. Must succeed, and must not
+     *    eat a byte doing it. */
+    uart_open_sim(&u, buf, at, 0);
+    outlen = 123;                                   /* must be overwritten */
+    if (frame_sync(&u, 2, out, &outlen, 1) != 0)
+        bad += framing_fail("quiet-line", "returned -1; a silent line is the "
+                            "normal state at production difficulty");
+    else if (outlen != 0)
+        bad += framing_fail("quiet-line", "reported bytes it never received");
+    else if (u.rx_bytes != 0)
+        bad += framing_fail("quiet-line", "consumed bytes from an empty line");
+
+    /* 2. Silence, then a single frame -- one candidate after a long wait, which
+     *    is exactly what a real share looks like. Sync must succeed AND leave
+     *    the stream aligned, so the very next 17 bytes are that frame. Checking
+     *    only the return code would pass on a sync that silently ate byte 0. */
+    memcpy(buf, frame, RESULT_LEN);
+    for (int i = 0; i < RESULT_LEN; ++i) at[i] = 50000 + (uint64_t)i * 87;
+    uart_open_sim(&u, buf, at, RESULT_LEN);
+    outlen = 0;
+    if (frame_sync(&u, 2, out, &outlen, 1) != 0) {
+        bad += framing_fail("quiet-then-frame", "sync failed on a sparse stream");
+    } else {
+        /* Exactly what the mining loop does: replay whatever sync handed back,
+         * then keep draining. The union must be the frame, byte for byte. A
+         * sync that "succeeds" having eaten the only candidate of the hour is
+         * indistinguishable from a dead part, and that is what shipped. */
+        uint8_t got[RESULT_LEN];
+        size_t  n = 0;
+        for (size_t i = 0; i < outlen && n < RESULT_LEN; ++i) got[n++] = out[i];
+        uint64_t stop = now_s() + 2;
+        while (n < RESULT_LEN && now_s() <= stop)
+            if (uart_get_nb(&u, &got[n])) n++;
+        fpga_result_t r;
+        if (n != RESULT_LEN)
+            bad += framing_fail("quiet-then-frame", "frame did not arrive intact -- "
+                                "sync consumed it and dropped it");
+        else if (parse_result(got, &r) != 0)
+            bad += framing_fail("quiet-then-frame", "frame did not parse -- misaligned");
+        else if (r.nonce != kNonce || r.hash_top64 != kHash)
+            bad += framing_fail("quiet-then-frame", "frame contents wrong -- off by a byte");
+    }
+
+    /* 3. One frame then silence: the pre-existing gap path. Must not regress --
+     *    it must still hand the collected frame back verbatim. */
+    memcpy(buf, frame, RESULT_LEN);
+    for (int i = 0; i < RESULT_LEN; ++i) at[i] = (uint64_t)i * 87;
+    uart_open_sim(&u, buf, at, RESULT_LEN);
+    outlen = 0;
+    if (frame_sync(&u, 2, out, &outlen, 1) != 0)
+        bad += framing_fail("gap-path", "sync failed on one frame + idle");
+    else if (outlen != RESULT_LEN || memcmp(out, frame, RESULT_LEN) != 0)
+        bad += framing_fail("gap-path", "did not return the frame verbatim");
+
+    /* 4. Dense stream, deliberately started 5 bytes into a frame: the histogram
+     *    path. This is the regime the 1.76 GH/s bring-up ran in, so it is the
+     *    one branch that was ever exercised -- it must not regress. */
+    {
+        size_t n = 0;
+        for (int f = 0; f < NF && n < sizeof buf; ++f)
+            for (int i = (f == 0 ? 5 : 0); i < RESULT_LEN && n < sizeof buf; ++i, ++n)
+                buf[n] = frame[i];
+        for (size_t i = 0; i < n; ++i) at[i] = (uint64_t)i * 87;   /* no gap, ever */
+        uart_open_sim(&u, buf, at, n);
+        outlen = 0;
+        if (frame_sync(&u, 2, out, &outlen, 1) != 0) {
+            bad += framing_fail("dense-path", "histogram sync failed");
+        } else if (outlen >= RESULT_LEN) {
+            fpga_result_t r;
+            if (parse_result(out, &r) != 0)
+                bad += framing_fail("dense-path", "aligned bytes do not parse");
+        }
+    }
+
+    /* 5. GUARD-RAIL. A caller that wants bytes back (selftest_loopback) must
+     *    still get -1 from a silent line. It gates on `synced && rxlen >= 17`,
+     *    so a bare success with zero bytes would silently disable verification
+     *    at all 168 receive phases and turn the FPGA-liveness test into a
+     *    seven-minute no-op -- and with Restart=always, a boot loop. If this
+     *    ever fails, someone "simplified" the quiet path by dropping its
+     *    caller test. Do not delete this case. */
+    uart_open_sim(&u, buf, at, 0);
+    outlen = 0;
+    if (frame_sync(&u, 2, out, &outlen, 0) == 0)
+        bad += framing_fail("loopback-guard", "a silent line must NOT report sync "
+                            "to a caller that needs bytes -- dead-FPGA detection lost");
+
+    if (bad == 0) printf("SELFTEST framing PASS (5 cases)\n");
+    else          printf("SELFTEST framing FAIL (%d)\n", bad);
+    return bad;
 }
 
 static int loopback_verify(knots_header_t *hp, int phase,
@@ -1040,7 +1237,10 @@ static int selftest_loopback(uio_uart_t *u)
 
         static uint8_t rxbuf[512];
         size_t rxlen = 0;
-        int synced = (frame_sync(u, 2, rxbuf, &rxlen) == 0);
+        /* quiet_ok = 0: this search uses a silent line to mean "this receive
+         * phase is dead". Accepting quiet here would make all 168 phases look
+         * identical whether the part is alive or not. */
+        int synced = (frame_sync(u, 2, rxbuf, &rxlen, 0) == 0);
 
         /* Dump the first few phases verbatim. A phase that yields bytes but no
          * frame-shaped window is the interesting case, and guessing at it has
@@ -1173,7 +1373,7 @@ static void usage(void)
         "  --payout-address A   bech32 address for the coinbase (default: dev fee address)\n"
         "  --submit-test        build a block from a live template and offer it to\n"
         "                       the node; it must be rejected high-hash, not unparsed\n"
-        "  --selftest WHAT      vectors | block | stratum | uart | loopback | rxdump | all\n"
+        "  --selftest WHAT      vectors | block | stratum | framing | uart | loopback | rxdump | all\n"
         "\n"
         " pool mining (Sia-dialect Stratum v1); without --stratum nothing here applies\n"
         "  --stratum HOST:PORT  mine to a pool instead of getblocktemplate\n"
@@ -1423,6 +1623,13 @@ int main(int argc, char **argv)
         return selftest_stratum() ? 1 : 0;
     }
 
+    /* Framing needs no hardware either -- it drives a scripted virtual device.
+     * It gates the sparse regime, which is where production actually lives and
+     * where the loopback selftest cannot reach. */
+    if (selftest && !strcmp(selftest, "framing")) {
+        return selftest_framing() ? 1 : 0;
+    }
+
     /* Vector tests need no hardware — run them first so a bad build is obvious. */
     if (!selftest || !strcmp(selftest, "vectors") || !strcmp(selftest, "all")) {
         snprintf(st.phase, sizeof st.phase, "selftest:vectors");
@@ -1513,6 +1720,11 @@ int main(int argc, char **argv)
     memset(&ctx, 0, sizeof ctx);
     uint8_t item[WORK_ITEM_LEN], frame[RESULT_LEN];
     size_t got = 0;
+    /* Bytes frame_sync consumed reaching its decision, replayed into the
+     * assembler below so a candidate is never lost to the act of syncing.
+     * Sized to what frame_sync can hand back (RESULT_LEN * 8). */
+    uint8_t syncbuf[RESULT_LEN * 8];
+    size_t  synclen = 0, syncpos = 0;
     int synced = 0, bad_run = 0;
     uint64_t last_template = 0, last_status = 0;
     int have_work = 0;
@@ -1574,14 +1786,46 @@ int main(int argc, char **argv)
          * arbitrary offset and every 17 bytes it assembles is a straddle of two
          * real frames, which reads as a total verification failure. */
         if (!synced && have_work) {
-            if (frame_sync(&u, 5, NULL, NULL) == 0) { synced = 1; got = 0; }
-            else logf_line("main: frame_sync failed, retrying on next template");
+            /* Whatever frame_sync collects to reach its decision are REAL
+             * result bytes, and at a share target they may be the only ones
+             * this hour -- so take them back and feed them to the assembler
+             * below. Passing NULL here dropped them on the floor: on the live
+             * device the gap path succeeded 12 times and frames_ok was 1,
+             * because each success threw away the very candidate that caused
+             * it. Case "quiet-then-frame" in selftest_framing() pins this.
+             *
+             * got is reset on FAILURE too. A partial frame left over from
+             * before the desync cannot be completed -- alignment is exactly
+             * what we have lost -- so keeping it only corrupts the next one.
+             *
+             * Timeout 5 -> 1: with quiet_ok the silent case now returns in ~3ms
+             * instead of burning the full timeout, and a dense stream needs
+             * only 59ms to collect the 68 bytes the histogram path wants. The
+             * old 5s blocking miss ran 32,786 times and starved stratum_poll,
+             * which is what the 176 pool reconnects were. */
+            got = 0;
+            synclen = syncpos = 0;
+            if (frame_sync(&u, 1, syncbuf, &synclen, 1) == 0) {
+                synced = 1;
+            } else {
+                synclen = 0;
+                logf_line("main: frame_sync failed, retrying on next template");
+            }
         }
 
         /* Drain continuously — the frame is 17 bytes and the FIFO is 16 deep,
-         * so it can never hold a whole frame. */
+         * so it can never hold a whole frame. Bytes handed back by frame_sync
+         * are consumed first, then the FIFO.
+         *
+         * Nothing is assembled while unsynced: at an arbitrary offset every
+         * 17-byte window is a straddle of two real frames, and at a share
+         * target the two can be hours apart, so the "frames" are spliced from
+         * unrelated candidates. That is what frames_bad 182 / frames_ok 1 was. */
         uint8_t b;
-        while (uart_get_nb(&u, &b)) {
+        for (;;) {
+            if (!synced) break;
+            if (syncpos < synclen)          b = syncbuf[syncpos++];
+            else if (!uart_get_nb(&u, &b))  break;
             frame[got++] = b;
             if (got == RESULT_LEN) {
                 got = 0;
@@ -1597,6 +1841,7 @@ int main(int argc, char **argv)
                 }
                 bad_run = 0;
                 st.frames_ok++;
+                st.last_frame_at = now_s();
 
                 uint64_t cand = r.nonce + (uint64_t)st.nonce_offset;
 
