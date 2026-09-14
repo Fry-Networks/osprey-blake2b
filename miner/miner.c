@@ -1154,7 +1154,51 @@ static int selftest_framing(void)
         bad += framing_fail("loopback-guard", "a silent line must NOT report sync "
                             "to a caller that needs bytes -- dead-FPGA detection lost");
 
-    if (bad == 0) printf("SELFTEST framing PASS (5 cases)\n");
+    /* 6. Gap-path collection that STARTS mid-frame. This is what a real desync
+     *    leaves behind: a partial frame already in the FIFO, then whole frames,
+     *    then silence. frame_sync aligns on the trailing gap, so it hands back
+     *    a run whose END is a boundary and whose START is not. A caller that
+     *    replays the whole run feeds the assembler a straddle and gets exactly
+     *    three unparseable frames before bad_run trips -- measured on hardware
+     *    as 449 bad frames against 149 gap syncs, 12% of throughput. Replaying
+     *    whole frames counted back from the end is the fix, and this pins it. */
+    {
+        size_t n = 0;
+        for (int i = 5; i < RESULT_LEN; ++i) buf[n++] = frame[i];   /* partial */
+        for (int f = 0; f < 2; ++f)
+            for (int i = 0; i < RESULT_LEN; ++i) buf[n++] = frame[i];
+        for (size_t i = 0; i < n; ++i) at[i] = (uint64_t)i * 87;
+        uart_open_sim(&u, buf, at, n);
+        outlen = 0;
+        if (frame_sync(&u, 2, out, &outlen, 1) != 0) {
+            bad += framing_fail("partial-lead", "sync failed");
+        } else {
+            size_t whole = (outlen / RESULT_LEN) * RESULT_LEN;
+            fpga_result_t r;
+
+            /* POSITIVE CONTROL. Replaying from offset 0 -- the naive thing, and
+             * what shipped -- must FAIL here. Without this the case below would
+             * pass just as happily on a stream that happened to start aligned,
+             * and would prove nothing about the bug it exists to catch. */
+            if (outlen > whole && parse_result(out, &r) == 0)
+                bad += framing_fail("partial-lead", "control did not fire: the "
+                                    "collection does not actually start mid-frame, "
+                                    "so this case proves nothing");
+
+            size_t pos = outlen - whole;        /* what the mining loop does */
+            int frames = 0;
+            while (pos + RESULT_LEN <= outlen) {
+                if (parse_result(out + pos, &r) != 0) break;
+                if (r.nonce != kNonce || r.hash_top64 != kHash) break;
+                pos += RESULT_LEN; frames++;
+            }
+            if (frames != (int)(whole / RESULT_LEN))
+                bad += framing_fail("partial-lead", "replaying from the end did not "
+                                    "yield whole parseable frames");
+        }
+    }
+
+    if (bad == 0) printf("SELFTEST framing PASS (6 cases)\n");
     else          printf("SELFTEST framing FAIL (%d)\n", bad);
     return bad;
 }
@@ -1807,6 +1851,18 @@ int main(int argc, char **argv)
             synclen = syncpos = 0;
             if (frame_sync(&u, 1, syncbuf, &synclen, 1) == 0) {
                 synced = 1;
+                /* Replay WHOLE frames only, counted back from the end.
+                 *
+                 * The gap path aligns on the TRAILING gap, so the collection
+                 * ends on a frame boundary but can START mid-frame -- the
+                 * desync that sent us here may have left a partial in the FIFO.
+                 * Feeding that leading remainder to the assembler cost 12% of
+                 * throughput on hardware: every resync produced exactly three
+                 * unparseable frames, which tripped bad_run >= 3 and resynced
+                 * again (449 bad frames against 149 gap syncs, a ratio of
+                 * 3.01). Simulation missed it because scripted streams start on
+                 * a boundary; only the board produces the partial. */
+                syncpos = synclen - (synclen / RESULT_LEN) * RESULT_LEN;
             } else {
                 synclen = 0;
                 logf_line("main: frame_sync failed, retrying on next template");
