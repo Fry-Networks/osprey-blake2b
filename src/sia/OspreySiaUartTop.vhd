@@ -81,6 +81,23 @@ architecture rtl of OspreySiaUartTop is
   signal NewWork    : boolean;
   signal ResultData : std_logic_vector(kTxBits-1 downto 0);
 
+  -- A COMPLETE work item, latched on NewWork. The core must never see the
+  -- receiver's live shift register -- see the comment above UnpackGen, and
+  -- OspreyBlake2bUartTop.vhd's HoldWork, whose bug this mirrors: WorkData is
+  -- USART's own shift register and stays live between frames, so a comb read
+  -- of it (the Header/TargetTop64 assignments below, pre-fix) glitches at
+  -- every serial edge instead of holding the last completed 88-byte item.
+  signal WorkDataHeld : std_logic_vector(kRxBits-1 downto 0) := (others => '0');
+
+  -- Clock enable for WorkDataHeld, its own signal purely so it can carry
+  -- MAX_FANOUT -- see OspreyBlake2bUartTop.vhd's identical NewWorkCe comment
+  -- for why an unreplicated enable driving 704 flops becomes the critical
+  -- path. max_fanout, not dont_touch: this is a single un-duplicated latch,
+  -- not a per-core broadcast net.
+  signal NewWorkCe : std_logic;
+  attribute max_fanout : integer;
+  attribute max_fanout of NewWorkCe : signal is 64;
+
   signal Header      : U64Array_t(9 downto 0);
   signal TargetTop64 : unsigned(63 downto 0);
   signal Enable      : std_logic;
@@ -138,13 +155,27 @@ begin
     ResultReady => open
   );
 
+  NewWorkCe <= '1' when NewWork else '0';
+
+  HoldWork: process(aResetInt, MiningClk)
+  begin
+    if aResetInt = '1' then
+      WorkDataHeld <= (others => '0');
+    elsif rising_edge(MiningClk) then
+      if NewWorkCe = '1' then
+        WorkDataHeld <= WorkData;
+      end if;
+    end if;
+  end process;
+
   ---------------------------------------------------------------------------
   -- Unpack: Header slot i <- bytes (i*8)..(i*8+7); TargetTop64 <- bytes 80..87.
+  -- Read from WorkDataHeld, never the receiver's live WorkData -- see HoldWork.
   ---------------------------------------------------------------------------
   UnpackGen: for i in 0 to 9 generate
-    Header(i) <= unsigned(WorkData(64*i + 63 downto 64*i));
+    Header(i) <= unsigned(WorkDataHeld(64*i + 63 downto 64*i));
   end generate;
-  TargetTop64 <= unsigned(WorkData(64*10 + 63 downto 64*10));
+  TargetTop64 <= unsigned(WorkDataHeld(64*10 + 63 downto 64*10));
 
   ---------------------------------------------------------------------------
   -- Run control. NewWork drops Enable for one cycle, which RELOADS the nonce
