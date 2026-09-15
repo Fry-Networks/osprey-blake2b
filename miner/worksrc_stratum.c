@@ -225,8 +225,18 @@ static int st_on_candidate(const work_ctx_t *ctx, uint64_t nonce, uint64_t hash_
 
     /* A job the pool has replaced is worthless: it will answer "stale" or
      * "job not found", which reads in the log like a protocol bug rather than
-     * ordinary timing. Drop it quietly with a count instead. */
-    if (g_cur.job_seq != g_cur.sess->job.seq) {
+     * ordinary timing. Drop it quietly with a count instead.
+     *
+     * But only when the REPLACEMENT job was clean. clean_jobs=false is the
+     * pool's own promise that shares for the old job are still good ("keep
+     * working, I'll still take a solution for what you were doing") -- the
+     * Sia/Bitcoin dialect uses it for a new block height where the coinbase
+     * changed but old-job shares remain valid. .clean was already parsed and
+     * logged (on_notify(), stratum.c) but had no reader anywhere: every notify
+     * bumped job_seq unconditionally, so a solution found in the gap between two
+     * clean=false notifies was discarded here even though the pool would have
+     * accepted it. */
+    if (g_cur.job_seq != g_cur.sess->job.seq && g_cur.sess->job.clean) {
         wlog("stratum: solution for stale job %s discarded", g_cur.job_id);
         return WORKSRC_CAND_OK;
     }
@@ -270,6 +280,11 @@ static const worksrc_t g_backend_sia = {
 const worksrc_t *worksrc_stratum_backend(void)
 {
     return (g_chain == WORKSRC_CHAIN_SIA) ? &g_backend_sia : &g_backend_knots;
+}
+
+void worksrc_stratum_test_feed(const char *line, uint64_t now)
+{
+    stratum_test_feed(&g_main, line, now);
 }
 
 void worksrc_stratum_status(worksrc_stratum_status_t *out)

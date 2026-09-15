@@ -77,11 +77,21 @@ typedef struct {
     int      have_job;
     int      subscribed, authorized;
 
-    uint64_t next_id, sub_id, auth_id;
+    uint64_t next_id, sub_id, auth_id, suggest_diff_id;
 
     /* ---- reconnection ---- */
     unsigned backoff_s;               /* current exponential backoff */
     uint64_t retry_at;                /* wall-clock second to try again */
+
+    /* One-time redirect from client.reconnect. Consumed by the NEXT dial only --
+     * see dial()'s own comment for why this must not become sticky. The wait is
+     * expressed through retry_at above, never a sleep(): this miner is a single
+     * polled loop with no I/O thread (see the file header), and stratum_poll()
+     * runs in the same iteration that drains the FPGA UART. Any blocking call
+     * here stalls that drain for as long as the pool asks. */
+    char     reconnect_host[128];
+    int      reconnect_port;
+    int      reconnect_pending;
 
     /* ---- observability (status.json) ---- */
     uint64_t jobs_received, shares_submitted, shares_accepted, shares_rejected;
@@ -117,8 +127,13 @@ void stratum_close(stratum_t *s);
 /* Test seam, in the spirit of devfee_reset(): hand the dispatcher one complete
  * JSON line as if it had arrived on the socket. Lets selftest_stratum.c grade
  * the protocol decode against captured pool traffic with no network at all,
- * which is the only way that decode gets tested on a build host. */
-void stratum_test_feed(stratum_t *s, const char *line);
+ * which is the only way that decode gets tested on a build host.
+ *
+ * Takes the simulated wall-clock second explicitly (the caller's clock is the
+ * only one in play -- see the file header) rather than reading it internally,
+ * so a test can drive time-dependent behaviour (client.reconnect's retry_at)
+ * deterministically instead of racing the real clock. */
+void stratum_test_feed(stratum_t *s, const char *line, uint64_t now);
 
 /* Share target as the FPGA wants it: the top 64 bits of the 256-bit target
  * implied by the pool's current difficulty. Difficulty 1 is Bitcoin's

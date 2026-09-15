@@ -56,4 +56,12 @@ typedef struct {
 
 void worksrc_stratum_status(worksrc_stratum_status_t *out);
 
+/* Test seam, in the spirit of stratum_test_feed(): hand the internal main-pool
+ * session one complete JSON line as if it had arrived on the socket. g_main is
+ * file-static, so this is the only way selftest_stratum.c can drive this
+ * module's REAL st_get_work()/st_on_candidate() -- the code that ships -- via
+ * worksrc_stratum_backend()'s function pointers, rather than a hand-rolled
+ * mirror of their logic. */
+void worksrc_stratum_test_feed(const char *line, uint64_t now);
+
 #endif /* WORKSRC_STRATUM_H */

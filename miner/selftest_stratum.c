@@ -19,9 +19,16 @@
 #include "devfee.h"
 #include "work_item.h"
 #include "worksrc.h"
+#include "worksrc_stratum.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 static int g_fail;
 
@@ -94,7 +101,7 @@ static void test_protocol(void)
     stratum_init(&s, "pool.invalid", 1234, "worker", "x");
     s.sub_id = 1;
 
-    stratum_test_feed(&s, SUBSCRIBE_LINE);
+    stratum_test_feed(&s, SUBSCRIBE_LINE, 1000);
     if (!s.subscribed)              { fail("subscribe decode", "not marked subscribed"); return; }
     if (s.en1_len != 4)             { fail("subscribe decode", "extranonce1 length wrong"); return; }
     if (s.en2_size != 8)            { fail("subscribe decode", "extranonce2_size wrong"); return; }
@@ -103,11 +110,11 @@ static void test_protocol(void)
         { fail("subscribe decode", "extranonce1 bytes wrong"); return; }
     ok("subscribe yields extranonce1 and an 8-byte extranonce2");
 
-    stratum_test_feed(&s, "{\"id\":null,\"method\":\"mining.set_difficulty\",\"params\":[4096]}");
+    stratum_test_feed(&s, "{\"id\":null,\"method\":\"mining.set_difficulty\",\"params\":[4096]}", 1000);
     if (s.difficulty != 4096.0) { fail("set_difficulty", "difficulty not stored"); return; }
     ok("set_difficulty is recorded");
 
-    stratum_test_feed(&s, NOTIFY_LINE);
+    stratum_test_feed(&s, NOTIFY_LINE, 1000);
     if (!s.have_job)                        { fail("notify decode", "no job"); return; }
     if (strcmp(s.job.job_id, JOB_ID))       { fail("notify decode", "job id"); return; }
     if (s.job.coinb1_len != 39)             { fail("notify decode", "coinb1 length"); return; }
@@ -130,13 +137,13 @@ static void test_protocol(void)
     uint64_t before = s.job.seq;
     stratum_test_feed(&s,
         "{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"bad\","
-        "\"" PREVHASH "\",\"" COINB1 "\",\"\",[],\"\",\"" NBITS "\",\"deadbeef\",true]}");
+        "\"" PREVHASH "\",\"" COINB1 "\",\"\",[],\"\",\"" NBITS "\",\"deadbeef\",true]}", 1000);
     if (s.job.seq != before || strcmp(s.job.job_id, JOB_ID))
         { fail("narrow ntime", "a 4-byte ntime was accepted"); return; }
     ok("a 4-byte (Bitcoin-width) ntime is rejected, not zero-extended");
 
     stratum_test_feed(&s,
-        "{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"short\",\"00\",\"\"]}");
+        "{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"short\",\"00\",\"\"]}", 1000);
     if (s.job.seq != before || strcmp(s.job.job_id, JOB_ID))
         { fail("short notify", "a 3-param notify was accepted"); return; }
     ok("a truncated notify is rejected without disturbing the live job");
@@ -149,8 +156,8 @@ static void test_stages(void)
     stratum_t s;
     stratum_init(&s, "pool.invalid", 1234, "worker", "x");
     s.sub_id = 1;
-    stratum_test_feed(&s, SUBSCRIBE_LINE);
-    stratum_test_feed(&s, NOTIFY_LINE);
+    stratum_test_feed(&s, SUBSCRIBE_LINE, 1000);
+    stratum_test_feed(&s, NOTIFY_LINE, 1000);
 
     uint8_t en2[8] = { 0 };
     uint8_t ss3[STAGE3_LEN], ss4[STAGE4_LEN], root[32];
@@ -269,8 +276,8 @@ static void test_sia_chain(void)
     stratum_t s;
     stratum_init(&s, "pool.invalid", 1234, "worker", "x");
     s.sub_id = 1;
-    stratum_test_feed(&s, SUBSCRIBE_LINE);
-    stratum_test_feed(&s, NOTIFY_LINE);
+    stratum_test_feed(&s, SUBSCRIBE_LINE, 1000);
+    stratum_test_feed(&s, NOTIFY_LINE, 1000);
 
     uint8_t en2[8] = { 0 };
     uint8_t header[STAGE4_LEN], root[32];
@@ -438,6 +445,246 @@ static void test_target(void)
     ok("a fractional difficulty widens the target as expected");
 }
 
+/* ---- loopback pool, for tests that need dial()/stratum_poll() to run for real
+ *
+ * Item 2 (suggest_difficulty) needs to see what dial() actually puts on the
+ * wire, and item 1 (clean_jobs) needs stratum_submit()'s real send() to
+ * genuinely succeed so st_on_candidate()'s real code path -- not a mirror of
+ * its logic -- is what gets graded, the same reason stratum_test_feed() exists
+ * for the inbound side. A listening socket plus one accept is the minimum that
+ * makes both true; nothing here speaks real Stratum beyond what a test sends
+ * or reads. -------------------------------------------------------------- */
+
+static int mock_pool_listen(int *out_port)
+{
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) return -1;
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;                              /* OS picks a free port */
+    if (bind(lfd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(lfd); return -1; }
+    socklen_t l = sizeof sa;
+    if (getsockname(lfd, (struct sockaddr *)&sa, &l) != 0) { close(lfd); return -1; }
+    *out_port = ntohs(sa.sin_port);
+    if (listen(lfd, 1) != 0) { close(lfd); return -1; }
+    return lfd;
+}
+
+/* Bounded wait for one connection; returns the accepted fd, or -1. */
+static int mock_pool_accept(int lfd, unsigned wait_ms)
+{
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(lfd, &r);
+    struct timeval tv = { .tv_sec = (time_t)(wait_ms / 1000), .tv_usec = (long)((wait_ms % 1000) * 1000) };
+    if (select(lfd + 1, &r, NULL, NULL, &tv) <= 0) return -1;
+    return accept(lfd, NULL, NULL);
+}
+
+/* Bounded, best-effort read of whatever the client has sent so far. Not a full
+ * protocol reader -- these tests only need to see complete lines that already
+ * arrived, not stream indefinitely. */
+static ssize_t mock_pool_read(int cfd, char *buf, size_t buflen, unsigned wait_ms)
+{
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(cfd, &r);
+    struct timeval tv = { .tv_sec = (time_t)(wait_ms / 1000), .tv_usec = (long)((wait_ms % 1000) * 1000) };
+    if (select(cfd + 1, &r, NULL, NULL, &tv) <= 0) { buf[0] = '\0'; return 0; }
+    ssize_t n = recv(cfd, buf, buflen - 1, 0);
+    if (n < 0) n = 0;
+    buf[n] = '\0';
+    return n;
+}
+
+/* Non-blocking check: did a connection arrive on lfd within wait_ms? Used by
+ * the reconnect test to poll for "did the client dial THIS listener" without
+ * ever calling accept() itself (the caller does that once the answer is yes,
+ * so a stray extra connection attempt cannot be silently swallowed here). */
+static int mock_pool_has_pending_connection(int lfd, unsigned wait_ms)
+{
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(lfd, &r);
+    struct timeval tv = { .tv_sec = 0, .tv_usec = (long)(wait_ms * 1000) };
+    return select(lfd + 1, &r, NULL, NULL, &tv) > 0;
+}
+
+/* ---- item 1: clean_jobs stale guard ------------------------------------ */
+
+static void test_clean_jobs(void)
+{
+    int port;
+    int lfd = mock_pool_listen(&port);
+    if (lfd < 0) { fail("clean_jobs setup", "could not open a loopback listener"); return; }
+
+    worksrc_stratum_configure(WORKSRC_CHAIN_KNOTS, "127.0.0.1", port,
+                              "worker", "x", NULL, NULL, NULL, NULL);
+    const worksrc_t *be = worksrc_stratum_backend();
+
+    be->poll(1000);                        /* dial(): connects to our listener */
+    int cfd = mock_pool_accept(lfd, 2000);
+    close(lfd);
+    if (cfd < 0) { fail("clean_jobs setup", "pool never received a connection"); return; }
+    char drain[2048];
+    mock_pool_read(cfd, drain, sizeof drain, 500);   /* eat subscribe/authorize/suggest_difficulty */
+
+    /* An extremely loose target so the nonce search below finds a real
+     * candidate quickly -- a grind, exactly what the real miner does, not a
+     * hand-picked hash. dscaled=5 at this difficulty (see the derivation in
+     * the run log): target[0]~51, ~20% of nonces pass on the first byte alone. */
+    worksrc_stratum_test_feed(
+        "{\"id\":null,\"method\":\"mining.set_difficulty\",\"params\":[0.0000000012]}", 1001);
+    worksrc_stratum_test_feed(SUBSCRIBE_LINE, 1001);
+    /* auth_id is the second id dial() allocates on a fresh session (sub_id=1,
+     * auth_id=2, suggest_diff_id=3 -- see dial()'s own next_id sequence), and
+     * g_main cannot be reached from this file to read it back, so this mirrors
+     * exactly what test_protocol() already does by hardcoding sub_id above. */
+    worksrc_stratum_test_feed("{\"id\":2,\"result\":true,\"error\":null}", 1001);
+    worksrc_stratum_test_feed(NOTIFY_LINE, 1001);          /* job A, clean=true */
+
+    work_ctx_t ctx;
+    if (be->get_work(&ctx) != 0)
+        { fail("clean_jobs setup", "get_work refused job A"); close(cfd); return; }
+
+    /* Job B replaces job A with clean_jobs=false, WITHOUT another get_work() in
+     * between -- the exact gap the bug discarded. clean_jobs=false is the
+     * pool's own promise that a solution for the OLD job is still good. */
+    worksrc_stratum_test_feed(
+        "{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"jobB\","
+        "\"" PREVHASH "\",\"" COINB1 "\",\"\",[],\"\",\"" NBITS "\",\"" NTIME "\",false]}", 1002);
+
+    int solved = 0;
+    for (uint64_t nonce = 0; nonce < 8192 && !solved; ++nonce) {
+        uint64_t top64 = sia_expected_top64(ctx.ss4, nonce);
+        if (be->on_candidate(&ctx, nonce, top64) == WORKSRC_CAND_SOLUTION) solved = 1;
+    }
+    close(cfd);
+
+    if (!solved) {
+        fail("clean_jobs", "no share was submitted for a job replaced by a clean_jobs=false notify");
+        return;
+    }
+    ok("a candidate for a job replaced by a clean_jobs=false notify is still submitted");
+}
+
+/* ---- item 2: mining.suggest_difficulty --------------------------------- */
+
+static void test_suggest_difficulty(void)
+{
+    int port;
+    int lfd = mock_pool_listen(&port);
+    if (lfd < 0) { fail("suggest_difficulty setup", "could not open a loopback listener"); return; }
+
+    stratum_t s;
+    stratum_init(&s, "127.0.0.1", port, "worker", "x");
+    stratum_poll(&s, 1000);                /* dial(): subscribe + authorize + suggest_difficulty */
+
+    int cfd = mock_pool_accept(lfd, 2000);
+    close(lfd);
+    if (cfd < 0) { fail("suggest_difficulty", "pool never received a connection"); return; }
+
+    char buf[2048];
+    mock_pool_read(cfd, buf, sizeof buf, 500);
+    close(cfd);
+
+    const char *sub  = strstr(buf, "\"method\":\"mining.subscribe\"");
+    const char *auth = strstr(buf, "\"method\":\"mining.authorize\"");
+    const char *sug  = strstr(buf, "\"method\":\"mining.suggest_difficulty\"");
+    if (!sub || !auth) { fail("suggest_difficulty", "handshake is missing subscribe/authorize"); return; }
+    if (!sug)          { fail("suggest_difficulty", "mining.suggest_difficulty was never sent"); return; }
+    if (sug < auth)    { fail("suggest_difficulty", "sent before authorize, not after"); return; }
+    if (!strstr(sug, "\"params\":[32]"))
+        { fail("suggest_difficulty", "params is not the numeric value 32"); return; }
+    ok("mining.suggest_difficulty is sent after authorize, with params [32]");
+
+    /* THE regression this fix exists to prevent: on_line()'s response dispatch
+     * has a closed-world fallback ("anything else with an id is a submit
+     * verdict") that a naive send-and-forget suggest_difficulty would fall
+     * into. Simulate the pool acking it and assert the share counters do not
+     * move -- the load-bearing assertion, not the send itself. */
+    char reply[128];
+    snprintf(reply, sizeof reply, "{\"id\":%llu,\"result\":true,\"error\":null}",
+             (unsigned long long)s.suggest_diff_id);
+    stratum_test_feed(&s, reply, 1001);
+    if (s.shares_accepted != 0 || s.shares_rejected != 0)
+        { fail("suggest_difficulty ack", "was miscounted as a share verdict"); return; }
+    ok("a suggest_difficulty reply does not corrupt shares_accepted/shares_rejected");
+}
+
+/* ---- item 3: client.reconnect ------------------------------------------ */
+
+static void test_reconnect(void)
+{
+    int port_a, port_b;
+    int lfd_a = mock_pool_listen(&port_a);
+    int lfd_b = mock_pool_listen(&port_b);
+    if (lfd_a < 0 || lfd_b < 0) { fail("reconnect setup", "could not open loopback listeners"); return; }
+
+    stratum_t s;
+    stratum_init(&s, "127.0.0.1", port_a, "worker", "x");
+    stratum_poll(&s, 1000);                          /* dial the primary */
+
+    int cfd = mock_pool_accept(lfd_a, 2000);
+    if (cfd < 0) { fail("reconnect", "primary pool never received a connection"); close(lfd_a); close(lfd_b); return; }
+    char drain[2048];
+    mock_pool_read(cfd, drain, sizeof drain, 500);    /* eat the handshake burst */
+
+    char msg[256];
+    snprintf(msg, sizeof msg,
+             "{\"id\":null,\"method\":\"client.reconnect\",\"params\":[\"127.0.0.1\",%d,0]}\n",
+             port_b);
+    send(cfd, msg, strlen(msg), 0);
+    /* Do NOT close(cfd) here. stratum_poll()'s read loop calls recv() in a tight
+     * for(;;) until EAGAIN or 0; closing the peer right after send() lets that
+     * SAME poll call see recv()==0 on its very next iteration and drop() before
+     * the just-buffered client.reconnect line is ever handed to on_line() --
+     * losing the message entirely. A real pool leaves the socket open and lets
+     * the client disconnect on its own initiative, which is what the client's
+     * own client.reconnect handler does (drop() at the end of that branch), so
+     * mirror that here instead of closing from the test's side. */
+
+    /* wait_time=0, so the very next poll should attempt the redirect -- no
+     * sleep on the test's side either; a bounded number of poll calls is what
+     * "non-blocking" means here, not a wait. */
+    int redirected = 0;
+    for (int i = 0; i < 30 && !redirected; ++i) {
+        stratum_poll(&s, 1000 + (uint64_t)i);
+        if (mock_pool_has_pending_connection(lfd_b, 100)) redirected = 1;
+    }
+    close(cfd);
+    if (!redirected) {
+        fail("client.reconnect", "the redirect target was never dialled");
+        close(lfd_a); close(lfd_b);
+        return;
+    }
+    ok("client.reconnect's redirect target is actually dialled, not ignored");
+
+    int cfd2 = mock_pool_accept(lfd_b, 500);
+    if (cfd2 >= 0) close(cfd2);
+    close(lfd_b);
+
+    /* Non-stickiness: once THIS (redirect) connection ends, the miner must go
+     * back to the ORIGINAL configured host, never the redirect target again.
+     * lfd_b is already closed, so a second attempt at it would simply fail to
+     * connect; assert it lands on lfd_a instead. */
+    stratum_close(&s);
+    s.retry_at = 0;                                   /* let the next poll dial immediately */
+    int back_on_primary = 0;
+    for (int i = 0; i < 30 && !back_on_primary; ++i) {
+        stratum_poll(&s, 2000 + (uint64_t)i);
+        if (mock_pool_has_pending_connection(lfd_a, 100)) back_on_primary = 1;
+    }
+    close(lfd_a);
+    if (!back_on_primary) {
+        fail("client.reconnect", "did not fall back to the configured host after the redirect connection ended");
+        return;
+    }
+    ok("the redirect is one-time: a later reconnect uses the configured host again");
+}
+
 int selftest_stratum(void)
 {
     g_fail = 0;
@@ -449,6 +696,9 @@ int selftest_stratum(void)
     test_pack();
     test_devfee_pool();
     test_target();
+    test_clean_jobs();
+    test_suggest_difficulty();
+    test_reconnect();
     printf("SELFTEST stratum %s (%d failures)\n", g_fail ? "FAIL" : "PASS", g_fail);
     return g_fail ? -1 : 0;
 }

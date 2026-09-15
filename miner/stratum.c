@@ -312,11 +312,37 @@ static void dial(stratum_t *s, uint64_t now)
 {
     if (now < s->retry_at) return;
 
-    if (s->addr[0] == '\0') {
+    /* One-time redirect from a prior client.reconnect. Consumed here,
+     * unconditionally, before this attempt's outcome is even known -- that is
+     * what makes it one-time: whether THIS attempt succeeds or fails, every
+     * dial() call after it uses the configured host again, never the redirect
+     * target a second time.
+     *
+     * The redirect resolves into its OWN local buffer rather than s->addr. That
+     * cache exists to remember the CONFIGURED host's IP across reconnects; a
+     * redirect target's address has no business overwriting it, or the next
+     * *normal* dial (after this redirect's connection eventually drops, however
+     * much later) would try to connect the configured hostname's socket options
+     * to the redirect's stale IP. One extra resolve on the rare redirect path
+     * costs nothing. */
+    const char *host = s->host;
+    int         port = s->port;
+    char        redirect_addr[INET_ADDRSTRLEN];
+    char       *addr = s->addr;
+    if (s->reconnect_pending) {
+        host = s->reconnect_host;
+        port = s->reconnect_port;
+        s->reconnect_pending = 0;
+        redirect_addr[0] = '\0';
+        addr = redirect_addr;
+        slog("stratum: dialling redirect target %s:%d", host, port);
+    }
+
+    if (addr[0] == '\0') {
         char err[192];
-        if (dns_resolve_a(s->host, s->addr, sizeof s->addr, DNS_TIMEOUT_MS,
+        if (dns_resolve_a(host, addr, INET_ADDRSTRLEN, DNS_TIMEOUT_MS,
                           err, sizeof err) != 0) {
-            s->addr[0] = '\0';
+            if (addr == s->addr) s->addr[0] = '\0';
             snprintf(s->last_error, sizeof s->last_error, "%s", err);
             slog("stratum: %s", err);
             s->backoff_s = s->backoff_s ? (s->backoff_s * 2) : BACKOFF_MIN_S;
@@ -324,7 +350,7 @@ static void dial(stratum_t *s, uint64_t now)
             s->retry_at = now + s->backoff_s;
             return;
         }
-        slog("stratum: %s resolves to %s", s->host, s->addr);
+        slog("stratum: %s resolves to %s", host, addr);
     }
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -333,10 +359,10 @@ static void dial(stratum_t *s, uint64_t now)
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;
-    sa.sin_port   = htons((uint16_t)s->port);
-    if (inet_pton(AF_INET, s->addr, &sa.sin_addr) != 1) {
+    sa.sin_port   = htons((uint16_t)port);
+    if (inet_pton(AF_INET, addr, &sa.sin_addr) != 1) {
         close(fd);
-        s->addr[0] = '\0';                    /* force a re-resolve next time */
+        if (addr == s->addr) s->addr[0] = '\0';   /* force a re-resolve next time */
         snprintf(s->last_error, sizeof s->last_error, "bad pool address");
         return;
     }
@@ -372,7 +398,7 @@ static void dial(stratum_t *s, uint64_t now)
     }
     if (rc != 0) {
         snprintf(s->last_error, sizeof s->last_error,
-                 "connect %.120s:%d: %s", s->host, s->port, strerror(errno));
+                 "connect %.120s:%d: %s", host, port, strerror(errno));
         slog("stratum: %s", s->last_error);
         close(fd);
         s->backoff_s = s->backoff_s ? (s->backoff_s * 2) : BACKOFF_MIN_S;
@@ -389,7 +415,7 @@ static void dial(stratum_t *s, uint64_t now)
     s->rx_len = 0;
     s->backoff_s = 0;
     s->reconnects++;
-    slog("stratum: connected to %s:%d (%s)", s->host, s->port, s->addr);
+    slog("stratum: connected to %s:%d (%s)", host, port, addr);
 
     char line[512];
     s->sub_id = ++s->next_id;
@@ -402,6 +428,22 @@ static void dial(stratum_t *s, uint64_t now)
     snprintf(line, sizeof line,
              "{\"id\":%llu,\"method\":\"mining.authorize\",\"params\":[\"%s\",\"%s\"]}\n",
              (unsigned long long)s->auth_id, s->worker, s->password);
+    if (send_line(s, line) != 0) return;
+
+    /* Optional per the Stratum v1 spec: a pool that supports it retunes its
+     * vardiff immediately instead of us grinding at whatever difficulty it
+     * assigned a full-farm rig; a pool that does not support it ignores an
+     * unrecognised method, which is the same "ignore what you don't understand"
+     * rule every other unhandled message in this file already relies on. Sent
+     * in the same burst as subscribe/authorize -- before the pool can possibly
+     * have sent a mining.notify -- rather than gated on the authorize response,
+     * which would need a second connection-setup state machine for no benefit.
+     * 32 is a fixed value for this device's measured hashrate; not made
+     * CLI-configurable here (out of this fix's scope). */
+    s->suggest_diff_id = ++s->next_id;
+    snprintf(line, sizeof line,
+             "{\"id\":%llu,\"method\":\"mining.suggest_difficulty\",\"params\":[32]}\n",
+             (unsigned long long)s->suggest_diff_id);
     send_line(s, line);
 }
 
@@ -499,7 +541,7 @@ static void on_notify(stratum_t *s, const char *params)
          j.job_id, j.nbranches, j.clean, j.nbits);
 }
 
-static void on_line(stratum_t *s, const char *line)
+static void on_line(stratum_t *s, const char *line, uint64_t now)
 {
     const char *meth = js_get(line, "method");
     if (meth) {
@@ -535,6 +577,30 @@ static void on_line(stratum_t *s, const char *line)
                      s->en1_len);
             }
         } else if (!strcmp(m, "client.reconnect")) {
+            /* params = [new_host, new_port, wait_time], all optional per the
+             * spec. Non-blocking: the wait is expressed through retry_at, which
+             * dial() already polls -- never a sleep(), which on this
+             * single-threaded miner would stall the FPGA UART drain for as long
+             * as the pool asked (up to 300 s, bounded below). Not sticky: the
+             * redirect is consumed by exactly one dial() attempt (see dial()'s
+             * own comment), so a later disconnect of a successful redirect
+             * connection reconnects to the CONFIGURED host, not the redirect. */
+            const char *h = js_elem(params, 0);
+            const char *p = js_elem(params, 1);
+            const char *w = js_elem(params, 2);
+            double wait = w ? js_num(w) : 0;
+            if (wait < 0)   wait = 0;
+            if (wait > 300) wait = 300;
+            if (h && js_str(h, s->reconnect_host, sizeof s->reconnect_host) == 0) {
+                s->reconnect_port    = p ? (int)js_num(p) : s->port;  /* 0/absent = same port */
+                s->reconnect_pending = 1;
+                s->addr[0]           = '\0';               /* force a fresh resolve */
+                s->retry_at          = now + (uint64_t)wait;
+                slog("stratum: client.reconnect to %s:%d in %.0fs",
+                     s->reconnect_host, s->reconnect_port, wait);
+            } else {
+                slog("stratum: client.reconnect with no usable host, reconnecting to configured pool");
+            }
             drop(s, "pool asked us to reconnect");
         }
         return;
@@ -556,6 +622,16 @@ static void on_line(stratum_t *s, const char *line)
         slog("stratum: authorize %s", s->authorized ? "OK" : "REJECTED");
         if (!s->authorized) snprintf(s->last_error, sizeof s->last_error,
                                      "pool rejected worker %s", s->worker);
+        return;
+    }
+    if (id == s->suggest_diff_id) {
+        /* Load-bearing check, not just observability: without it this reply
+         * falls into the generic verdict branch below and gets counted as a
+         * share accept/reject, corrupting status.json. Many pools never answer
+         * this method at all (it is a hint, not a request), which is fine --
+         * an unmatched id here is simply never seen again. */
+        slog("stratum: suggest_difficulty %s",
+             (res && js_true(res)) ? "acknowledged" : "no explicit ack");
         return;
     }
 
@@ -620,7 +696,7 @@ void stratum_poll(stratum_t *s, uint64_t now)
     char *nl;
     while ((nl = memchr(start, '\n', (size_t)((s->rx + s->rx_len) - start))) != NULL) {
         *nl = '\0';
-        if (nl > start) on_line(s, start);
+        if (nl > start) on_line(s, start, now);
         start = nl + 1;
         if (s->fd < 0) return;                 /* a handler dropped us */
     }
@@ -660,4 +736,4 @@ int stratum_submit(stratum_t *s, const char *job_id,
 
 void stratum_close(stratum_t *s) { drop(s, NULL); }
 
-void stratum_test_feed(stratum_t *s, const char *line) { on_line(s, line); }
+void stratum_test_feed(stratum_t *s, const char *line, uint64_t now) { on_line(s, line, now); }
