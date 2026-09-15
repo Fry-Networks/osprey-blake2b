@@ -86,8 +86,9 @@ if { $mode eq "full" } {
 } else {
   set oocxdc $root/build/ooc_timing.xdc
   set fh [open $oocxdc w]
-  puts $fh "# OOC timing-only constraint: 250 MHz on Clk (matches clock_mgmt.vhd MMCM output)"
-  puts $fh "create_clock -period 4.000 -name Clk \[get_ports Clk\]"
+  puts $fh "# OOC timing-only constraint: 222.222 MHz on Clk (matches clock_mgmt.vhd's shipped"
+  puts $fh "# CLKOUT0_DIVIDE_F => 4.500, VCO 1000 MHz / 4.5)"
+  puts $fh "create_clock -period 4.500 -name Clk \[get_ports Clk\]"
   close $fh
   read_xdc $oocxdc
   puts "INFO: wrote + read $oocxdc"

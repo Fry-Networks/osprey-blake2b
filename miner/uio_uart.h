@@ -91,9 +91,15 @@ int  uart_drain_tx(uio_uart_t *u, unsigned timeout_us);
 
 /* True once RX has been empty for at least idle_us.
  *
- * Quiet gate: OspreyBlake2bUartGetWork.vhd shares one baud counter between the
- * receiver and the transmitter, and an RX start bit asserts restartBaud, which
- * resets it. Transmitting while the FPGA is mid-reply garbles that reply. */
+ * Quiet gate: waits for a pending FPGA reply to fully drain before a new work
+ * item is written, so the host does not start uploading over its own read of
+ * an in-flight frame. OspreyBlake2bUartGetWork.vhd used to share one baud
+ * counter between the receiver and the transmitter -- an RX start bit
+ * asserted restartBaud, which reset it, corrupting whichever TX byte was mid-
+ * flight -- but that coupling is gone: TxBaudGen/txClkCount are now their own
+ * free-running counter, untouched by restartBaud (see that file's own comment
+ * on the split). This gate is kept regardless, as host-side insurance against
+ * overlapping a write with an unread reply. */
 int uart_wait_quiet(uio_uart_t *u, unsigned idle_us, unsigned timeout_us);
 
 #endif /* OSPREY_UIO_UART_H */
